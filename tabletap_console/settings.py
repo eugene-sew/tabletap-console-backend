@@ -163,9 +163,11 @@ if not DEBUG:
     DEFAULT_FILE_STORAGE = 'storages.backends.s3boto3.S3Boto3Storage'
 
 # Custom User Model
-AUTH_USER_MODEL = 'authentication.User'
 
 CSRF_TRUSTED_ORIGINS = [
     'https://ttc.onehiveafrica.com',
     'http://ttc.onehiveafrica.com',
 ]
+
+
+AUTH_USER_MODEL = 'authentication.User'
