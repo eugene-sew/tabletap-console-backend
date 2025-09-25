@@ -164,3 +164,8 @@ if not DEBUG:
 
 # Custom User Model
 AUTH_USER_MODEL = 'authentication.User'
+
+CSRF_TRUSTED_ORIGINS = [
+    'https://ttc.onehiveafrica.com',
+    'http://ttc.onehiveafrica.com',
+]
