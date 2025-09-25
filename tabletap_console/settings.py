@@ -5,7 +5,7 @@ BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 SECRET_KEY = config('SECRET_KEY', default='your-secret-key-here')
 DEBUG = config('DEBUG', default=True, cast=bool)
-ALLOWED_HOSTS = config('ALLOWED_HOSTS', default='localhost,127.0.0.1,test.localhost,*.localhost,console.tabletap.space,tabletap.space', cast=lambda v: [s.strip() for s in v.split(',')])
+ALLOWED_HOSTS = config('ALLOWED_HOSTS', default='localhost,127.0.0.1,test.localhost,*.localhost,console.tabletap.space,tabletap.space,ttc.onehiveafrica.com', cast=lambda v: [s.strip() for s in v.split(',')])
 
 # Application definition
 SHARED_APPS = [
