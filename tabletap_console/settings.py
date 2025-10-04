@@ -5,7 +5,7 @@ BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 SECRET_KEY = config('SECRET_KEY', default='your-secret-key-here')
 DEBUG = config('DEBUG', default=True, cast=bool)
-ALLOWED_HOSTS = config('ALLOWED_HOSTS', default='localhost,127.0.0.1,test.localhost,*.localhost,console.tabletap.space,tabletap.space,ttc.onehiveafrica.com', cast=lambda v: [s.strip() for s in v.split(',')])
+ALLOWED_HOSTS = config('ALLOWED_HOSTS', default='localhost,127.0.0.1,test.localhost,*.localhost,console.tabletap.space,tabletap.space,ttc.onehiveafrica.com,*.loca.lt,*.ngrok.io,*.tunnelmole.com', cast=lambda v: [s.strip() for s in v.split(',')])
 
 # Application definition
 SHARED_APPS = [
@@ -18,6 +18,7 @@ SHARED_APPS = [
     'django.contrib.staticfiles',
     'rest_framework',
     'corsheaders',
+    'drf_yasg',
     'tenants',
     'authentication',
     'subscriptions',
@@ -29,6 +30,7 @@ TENANT_APPS = [
     'django.contrib.auth',
     'staff',
     'tools',
+    'restaurant_tables',
 ]
 
 INSTALLED_APPS = list(SHARED_APPS) + [app for app in TENANT_APPS if app not in SHARED_APPS]
@@ -49,7 +51,8 @@ MIDDLEWARE = [
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
 ]
 
-ROOT_URLCONF = 'tabletap_console.urls'
+ROOT_URLCONF = 'tabletap_console.tenant_urls'
+PUBLIC_SCHEMA_URLCONF = 'tabletap_console.urls'
 
 TEMPLATES = [
     {
@@ -137,11 +140,16 @@ REST_FRAMEWORK = {
 }
 
 # CORS settings
-CORS_ALLOWED_ORIGINS = config(
-    'CORS_ALLOWED_ORIGINS',
-    default='http://localhost:3000,http://127.0.0.1:3000',
-    cast=lambda v: [s.strip() for s in v.split(',')]
-)
+if DEBUG:
+    # Allow all origins in development for easier tunneling
+    CORS_ALLOW_ALL_ORIGINS = True
+    CORS_ALLOW_CREDENTIALS = True
+else:
+    CORS_ALLOWED_ORIGINS = config(
+        'CORS_ALLOWED_ORIGINS',
+        default='http://localhost:3000,http://127.0.0.1:3000,https://ttc-app.loca.lt',
+        cast=lambda v: [s.strip() for s in v.split(',')]
+    )
 
 # Clerk Configuration
 CLERK_SECRET_KEY = config('CLERK_SECRET_KEY', default='')
@@ -167,6 +175,9 @@ if not DEBUG:
 CSRF_TRUSTED_ORIGINS = [
     'https://ttc.onehiveafrica.com',
     'http://ttc.onehiveafrica.com',
+    'https://ttc-app.loca.lt',
+    'https://*.loca.lt',
+    'https://*.ngrok.io',
 ]
 
 

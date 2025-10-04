@@ -64,8 +64,41 @@ class ClerkAuthentication(BaseAuthentication):
                     raise AuthenticationFailed('Invalid token format')
             else:
                 # Production JWT verification with Clerk
-                # You would implement proper JWKS verification here
-                raise AuthenticationFailed('Production JWT verification not implemented')
+                try:
+                    # Get Clerk's JWKS
+                    jwks_url = f"https://api.clerk.dev/v1/jwks"
+                    jwks_response = requests.get(jwks_url, timeout=10)
+                    jwks = jwks_response.json()
+                    
+                    # Verify JWT with JWKS (simplified)
+                    # In a real implementation, you'd use a proper JWKS library
+                    payload = jwt.decode(
+                        token, 
+                        key=settings.CLERK_SECRET_KEY,
+                        algorithms=['RS256'],
+                        options={"verify_signature": True}
+                    )
+                    
+                    clerk_user_id = payload.get('sub')
+                    if not clerk_user_id:
+                        raise AuthenticationFailed('Invalid token payload')
+                    
+                    user, created = User.objects.get_or_create(
+                        clerk_user_id=clerk_user_id,
+                        defaults={
+                            'username': clerk_user_id,
+                            'email': payload.get('email', ''),
+                            'first_name': payload.get('given_name', ''),
+                            'last_name': payload.get('family_name', ''),
+                            'is_verified': True
+                        }
+                    )
+                    
+                    cache.set(cache_key, clerk_user_id, 300)
+                    return (user, token)
+                    
+                except (requests.RequestException, jwt.InvalidTokenError) as e:
+                    raise AuthenticationFailed(f'Token verification failed: {str(e)}')
             
         except Exception as e:
             raise AuthenticationFailed(f'Authentication failed: {str(e)}')

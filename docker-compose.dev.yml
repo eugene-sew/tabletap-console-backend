@@ -1,0 +1,101 @@
+version: "3.8"
+
+services:
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    ports:
+      - "3001:8000" # Backend API port
+    environment:
+      - DEBUG=True
+      - DB_HOST=db
+      - DB_PORT=5432
+      - DB_NAME=tabletap_console
+      - DB_USER=postgres
+      - DB_PASSWORD=mysecretpassword
+      - REDIS_URL=redis://redis:6379/0
+    depends_on:
+      - db
+      - redis
+    volumes:
+      # Mount your source code for live editing
+      - .:/app
+      # Preserve node_modules and other build artifacts
+      - /app/__pycache__
+      - /app/.pytest_cache
+    # Override command for development with auto-reload
+    command: >
+      sh -c "python manage.py migrate &&
+             python manage.py runserver 0.0.0.0:8000"
+    stdin_open: true
+    tty: true
+
+  db:
+    image: postgres:15
+    environment:
+      - POSTGRES_DB=tabletap_console
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=mysecretpassword
+    ports:
+      - "5435:5432" # Different port to avoid conflict with existing container
+    volumes:
+      - postgres_dev_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+
+  # Optional: Celery worker for background tasks
+  celery:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    command: celery -A tabletap_console worker -l info --reload
+    environment:
+      - DEBUG=True
+      - DB_HOST=db
+      - DB_PORT=5432
+      - DB_NAME=tabletap_console
+      - DB_USER=postgres
+      - DB_PASSWORD=mysecretpassword
+      - REDIS_URL=redis://redis:6379/0
+    depends_on:
+      - db
+      - redis
+    volumes:
+      - .:/app
+      - /app/__pycache__
+
+  # Optional: Celery beat for scheduled tasks
+  celery-beat:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    command: celery -A tabletap_console beat -l info
+    environment:
+      - DEBUG=True
+      - DB_HOST=db
+      - DB_PORT=5432
+      - DB_NAME=tabletap_console
+      - DB_USER=postgres
+      - DB_PASSWORD=mysecretpassword
+      - REDIS_URL=redis://redis:6379/0
+    depends_on:
+      - db
+      - redis
+    volumes:
+      - .:/app
+      - /app/__pycache__
+
+volumes:
+  postgres_dev_data:
+  redis_data:
