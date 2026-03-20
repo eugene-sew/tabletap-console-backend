@@ -1,0 +1,50 @@
+version: '3.8'
+
+services:
+  web:
+    build: .
+    image: tabletap-backend:latest
+    restart: always
+    environment:
+      - DEBUG=False
+      - DB_HOST=${DB_HOST}
+      - DB_USER=${DB_USER}
+      - DB_PASSWORD=${DB_PASSWORD}
+      - DB_NAME=${DB_NAME}
+      - DB_PORT=${DB_PORT}
+      - REDIS_URL=redis://redis:6379/0
+      - RUN_MIGRATIONS=true
+    depends_on:
+      - redis
+    command: ["gunicorn", "--bind", "0.0.0.0:8000", "--workers", "4", "tabletap_console.wsgi:application"]
+    entrypoint: /app/entrypoint.sh
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.api.rule=HostRegexp(`{tenant:.+}.tabletap.space`) && PathPrefix(`/api`)"
+      - "traefik.http.routers.api.entrypoints=websecure"
+      - "traefik.http.routers.api.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.api.priority=20"
+
+  celery:
+    image: tabletap-backend:latest
+    restart: always
+    environment:
+      - DEBUG=False
+      - DB_HOST=${DB_HOST}
+      - DB_USER=${DB_USER}
+      - DB_PASSWORD=${DB_PASSWORD}
+      - DB_NAME=${DB_NAME}
+      - DB_PORT=${DB_PORT}
+      - REDIS_URL=redis://redis:6379/0
+      - RUN_MIGRATIONS=false
+    depends_on:
+      - redis
+    command: ["celery", "-A", "tabletap_console", "worker", "-l", "info"]
+    entrypoint: /app/entrypoint.sh
+
+  redis:
+    image: redis:7-alpine
+    restart: always
+
+volumes:
+  postgres_data:
