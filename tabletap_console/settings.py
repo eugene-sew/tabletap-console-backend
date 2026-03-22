@@ -5,7 +5,11 @@ BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 SECRET_KEY = config('SECRET_KEY', default='your-secret-key-here')
 DEBUG = config('DEBUG', default=True, cast=bool)
-ALLOWED_HOSTS = config('ALLOWED_HOSTS', default='localhost,127.0.0.1,test.localhost,.localhost,*.localhost,.tabletap.space,tabletap.space,ttc.onehiveafrica.com,*.loca.lt,*.ngrok.io,*.tunnelmole.com', cast=lambda v: [s.strip() for s in v.split(',')])
+_raw_allowed_hosts = config('ALLOWED_HOSTS', default='localhost,127.0.0.1,.tabletap.space,tabletap.space', cast=lambda v: [s.strip() for s in v.split(',')])
+# Normalize *.domain.com → .domain.com — Django uses a leading dot for
+# subdomain wildcards; the *.domain.com form (common in nginx/Traefik configs)
+# is NOT recognised by Django and causes every request to return HTTP 400.
+ALLOWED_HOSTS = [('.' + h[2:]) if h.startswith('*.') else h for h in _raw_allowed_hosts if h]
 if DEBUG:
     ALLOWED_HOSTS += ['*']
 
@@ -159,7 +163,7 @@ if DEBUG:
 else:
     CORS_ALLOWED_ORIGINS = config(
         'CORS_ALLOWED_ORIGINS',
-        default='http://localhost:3000,http://127.0.0.1:3000,http://localhost:5173,https://ttc-app.loca.lt,https://tabletap.space,https://console.tabletap.space,https://pos.tabletap.space',
+        default='http://localhost:3000,http://127.0.0.1:3000,http://localhost:5173,https://tabletap.space,https://console.tabletap.space,https://pos.tabletap.space',
         cast=lambda v: [s.strip() for s in v.split(',')]
     )
     CORS_ALLOWED_ORIGIN_REGEXES = [
@@ -200,12 +204,6 @@ if not DEBUG:
 
 CSRF_TRUSTED_ORIGINS = [
     'http://localhost:5173',
-    'https://ttc.onehiveafrica.com',
-    'http://ttc.onehiveafrica.com',
-    'https://ttc-app.loca.lt',
-    'https://*.loca.lt',
-    'https://*.ngrok.io',
-    'https://*.tunnelmole.com',
     'https://tabletap.space',
     'https://console.tabletap.space',
     'https://pos.tabletap.space',

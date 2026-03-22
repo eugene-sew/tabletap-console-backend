@@ -33,4 +33,4 @@ EXPOSE 8000
 ENTRYPOINT ["/app/entrypoint.sh"]
 
 # Production command
-CMD ["gunicorn", "--bind", "0.0.0.0:8000", "--workers", "4", "tabletap_console.wsgi:application"]
+CMD ["gunicorn", "--bind", "0.0.0.0:8000", "--workers", "4", "--worker-class", "gevent", "--worker-connections", "1000", "--timeout", "30", "tabletap_console.wsgi:application"]
