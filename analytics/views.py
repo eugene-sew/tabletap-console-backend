@@ -3,7 +3,8 @@ from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.pagination import PageNumberPagination
-from django.db.models import Count, Sum
+from django.db.models import Count, Sum, F
+from django.db.models.functions import TruncDay, ExtractHour
 from django.utils import timezone
 from datetime import timedelta
 from .models import Event, DashboardMetric, AuditLog
@@ -11,7 +12,7 @@ from .serializers import EventSerializer, DashboardMetricSerializer
 from drf_yasg.utils import swagger_auto_schema
 from drf_yasg import openapi
 import random
-from orders.models import Order
+from orders.models import Order, OrderItem
 from django.contrib.auth import get_user_model
 User = get_user_model()
 
@@ -384,3 +385,206 @@ def audit_logs(request):
     ]
 
     return paginator.get_paginated_response(data)
+
+
+# ── Chart endpoints ─────────────────────────────────────────────────────────
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def chart_revenue_trend(request):
+    """Daily revenue + order count for the last N days (default 14)."""
+    tenant = getattr(request, 'tenant', None)
+    if not tenant:
+        return Response({'error': 'Tenant context required'}, status=400)
+
+    days = min(int(request.query_params.get('days', 14)), 90)
+    since = timezone.now() - timedelta(days=days)
+
+    rows = (
+        Order.objects
+        .filter(tenant=tenant, created_at__gte=since)
+        .exclude(status='cancelled')
+        .annotate(day=TruncDay('created_at'))
+        .values('day')
+        .annotate(revenue=Sum('total_amount'), orders=Count('id'))
+        .order_by('day')
+    )
+
+    # Fill in missing days with zeros
+    result = {}
+    for i in range(days):
+        d = (since + timedelta(days=i)).date()
+        result[str(d)] = {'date': str(d), 'revenue': 0.0, 'orders': 0}
+    for r in rows:
+        d = str(r['day'].date())
+        result[d] = {'date': d, 'revenue': float(r['revenue']), 'orders': r['orders']}
+
+    return Response({'success': True, 'data': list(result.values())})
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def chart_hourly_orders(request):
+    """Orders and revenue by hour of day (0-23)."""
+    tenant = getattr(request, 'tenant', None)
+    if not tenant:
+        return Response({'error': 'Tenant context required'}, status=400)
+
+    days = min(int(request.query_params.get('days', 30)), 90)
+    since = timezone.now() - timedelta(days=days)
+
+    rows = (
+        Order.objects
+        .filter(tenant=tenant, created_at__gte=since)
+        .exclude(status='cancelled')
+        .annotate(hour=ExtractHour('created_at'))
+        .values('hour')
+        .annotate(orders=Count('id'), revenue=Sum('total_amount'))
+        .order_by('hour')
+    )
+
+    result = {h: {'hour': h, 'label': f'{h:02d}:00', 'orders': 0, 'revenue': 0.0} for h in range(24)}
+    for r in rows:
+        result[r['hour']].update({'orders': r['orders'], 'revenue': float(r['revenue'])})
+
+    return Response({'success': True, 'data': list(result.values())})
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def chart_top_items(request):
+    """Top-selling menu items by revenue and quantity."""
+    tenant = getattr(request, 'tenant', None)
+    if not tenant:
+        return Response({'error': 'Tenant context required'}, status=400)
+
+    days = min(int(request.query_params.get('days', 30)), 90)
+    limit = min(int(request.query_params.get('limit', 8)), 20)
+    since = timezone.now() - timedelta(days=days)
+
+    rows = (
+        OrderItem.objects
+        .filter(order__tenant=tenant, order__created_at__gte=since)
+        .exclude(order__status='cancelled')
+        .values('name')
+        .annotate(
+            revenue=Sum(F('price') * F('quantity')),
+            quantity=Sum('quantity'),
+        )
+        .order_by('-revenue')[:limit]
+    )
+
+    data = [{'name': r['name'], 'revenue': float(r['revenue']), 'quantity': r['quantity']} for r in rows]
+    return Response({'success': True, 'data': data})
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def chart_order_types(request):
+    """Breakdown of orders by type (dine_in / pickup / delivery)."""
+    tenant = getattr(request, 'tenant', None)
+    if not tenant:
+        return Response({'error': 'Tenant context required'}, status=400)
+
+    days = min(int(request.query_params.get('days', 30)), 90)
+    since = timezone.now() - timedelta(days=days)
+
+    label_map = dict(Order.ORDER_TYPE_CHOICES)
+    rows = (
+        Order.objects
+        .filter(tenant=tenant, created_at__gte=since)
+        .exclude(status='cancelled')
+        .values('order_type')
+        .annotate(count=Count('id'), revenue=Sum('total_amount'))
+        .order_by('-count')
+    )
+
+    data = [
+        {
+            'type': r['order_type'],
+            'label': label_map.get(r['order_type'], r['order_type']),
+            'count': r['count'],
+            'revenue': float(r['revenue']),
+        }
+        for r in rows
+    ]
+    return Response({'success': True, 'data': data})
+
+
+# ── System search endpoint ───────────────────────────────────────────────────
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def system_search(request):
+    """Search across orders, menu items, and staff members for a tenant."""
+    tenant = getattr(request, 'tenant', None)
+    if not tenant:
+        return Response({'error': 'Tenant context required'}, status=400)
+
+    q = request.query_params.get('q', '').strip()
+    if not q or len(q) < 2:
+        return Response({'success': True, 'results': []})
+
+    from menu.models import MenuItem
+    from staff.models import StaffMember
+    from django.db.models import Q
+
+    results = []
+
+    # Orders — search by order number and customer name
+    orders = (
+        Order.objects
+        .filter(tenant=tenant)
+        .filter(Q(order_number__icontains=q) | Q(customer_name__icontains=q))
+        .order_by('-created_at')[:5]
+    )
+    for o in orders:
+        results.append({
+            'type': 'order',
+            'id': o.id,
+            'title': f'Order #{o.order_number}',
+            'subtitle': o.customer_name or o.get_order_type_display(),
+            'meta': o.get_status_display(),
+            'url': '/orders',
+        })
+
+    # Menu items — search by name and description
+    items = (
+        MenuItem.objects
+        .filter(tenant=tenant)
+        .filter(Q(name__icontains=q) | Q(description__icontains=q))
+        .select_related('category')
+        .order_by('name')[:5]
+    )
+    for item in items:
+        results.append({
+            'type': 'menu',
+            'id': item.id,
+            'title': item.name,
+            'subtitle': item.category.name if item.category else '',
+            'meta': 'Available' if item.isAvailable else 'Unavailable',
+            'url': '/menu',
+        })
+
+    # Staff members — search by name and email
+    staff = (
+        StaffMember.objects
+        .filter(tenant=tenant, is_active=True)
+        .filter(
+            Q(user__first_name__icontains=q) |
+            Q(user__last_name__icontains=q) |
+            Q(user__email__icontains=q)
+        )
+        .select_related('user', 'role')[:5]
+    )
+    for member in staff:
+        results.append({
+            'type': 'staff',
+            'id': member.id,
+            'title': member.user.get_full_name() or member.user.email,
+            'subtitle': member.role.name if member.role else '',
+            'meta': member.employee_id,
+            'url': '/team',
+        })
+
+    return Response({'success': True, 'results': results})
