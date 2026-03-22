@@ -94,6 +94,9 @@ class AuditLog(models.Model):
     entity_id = models.CharField(max_length=100, blank=True)
     entity_label = models.CharField(max_length=255, blank=True)
 
+    # Which tenant this log belongs to (schema name)
+    tenant_schema = models.CharField(max_length=100, blank=True, db_index=True)
+
     # Extra context (old values, new values, etc.)
     metadata = models.JSONField(default=dict)
 
@@ -102,6 +105,7 @@ class AuditLog(models.Model):
     class Meta:
         ordering = ['-created_at']
         indexes = [
+            models.Index(fields=['tenant_schema', 'created_at']),
             models.Index(fields=['action', 'created_at']),
             models.Index(fields=['entity_type', 'created_at']),
             models.Index(fields=['actor_email', 'created_at']),

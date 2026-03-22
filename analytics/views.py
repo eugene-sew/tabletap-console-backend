@@ -328,7 +328,11 @@ def audit_logs(request):
     Return a paginated, filterable list of audit log entries for the current tenant.
     Filters: entity_type, action, actor_email, start_date, end_date, search
     """
-    qs = AuditLog.objects.all()
+    tenant = getattr(request, 'tenant', None)
+    if not tenant:
+        return Response({'success': False, 'error': 'Tenant context required'}, status=400)
+
+    qs = AuditLog.objects.filter(tenant_schema=tenant.schema_name)
 
     entity_type = request.query_params.get('entity_type')
     if entity_type:
