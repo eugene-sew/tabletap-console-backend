@@ -79,16 +79,40 @@ TEMPLATES = [
 
 WSGI_APPLICATION = 'tabletap_console.wsgi.application'
 
-DATABASES = {
-    'default': {
-        'ENGINE': 'django_tenants.postgresql_backend',
-        'NAME': config('DB_NAME', default=os.environ.get('PGDATABASE', 'tabletap_console')),
-        'USER': config('DB_USER', default=os.environ.get('PGUSER', 'postgres')),
-        'PASSWORD': config('DB_PASSWORD', default=os.environ.get('PGPASSWORD', 'mysecretpassword')),
-        'HOST': config('DB_HOST', default=os.environ.get('PGHOST', 'localhost')),
-        'PORT': config('DB_PORT', default=os.environ.get('PGPORT', '5432')),
+_neon_url = os.environ.get('NEON_DATABASE_URL', '')
+
+if _neon_url:
+    import urllib.parse as _urlparse
+    _parsed = _urlparse.urlparse(_neon_url)
+    _neon_options = {}
+    _qs = _urlparse.parse_qs(_parsed.query)
+    if 'sslmode' in _qs:
+        _neon_options['-c'] = f"sslmode={_qs['sslmode'][0]}"
+    DATABASES = {
+        'default': {
+            'ENGINE': 'django_tenants.postgresql_backend',
+            'NAME': _parsed.path.lstrip('/'),
+            'USER': _parsed.username,
+            'PASSWORD': _parsed.password,
+            'HOST': _parsed.hostname,
+            'PORT': _parsed.port or 5432,
+            'OPTIONS': {
+                'sslmode': _qs.get('sslmode', ['require'])[0],
+                'connect_timeout': 10,
+            },
+        }
     }
-}
+else:
+    DATABASES = {
+        'default': {
+            'ENGINE': 'django_tenants.postgresql_backend',
+            'NAME': config('DB_NAME', default=os.environ.get('PGDATABASE', 'tabletap_console')),
+            'USER': config('DB_USER', default=os.environ.get('PGUSER', 'postgres')),
+            'PASSWORD': config('DB_PASSWORD', default=os.environ.get('PGPASSWORD', 'mysecretpassword')),
+            'HOST': config('DB_HOST', default=os.environ.get('PGHOST', 'localhost')),
+            'PORT': config('DB_PORT', default=os.environ.get('PGPORT', '5432')),
+        }
+    }
 
 DATABASE_ROUTERS = (
     'django_tenants.routers.TenantSyncRouter',
