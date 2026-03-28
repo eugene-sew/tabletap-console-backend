@@ -1,4 +1,5 @@
 import os
+from datetime import timedelta
 from decouple import config
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -6,14 +7,10 @@ BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SECRET_KEY = config('SECRET_KEY', default='your-secret-key-here')
 DEBUG = config('DEBUG', default=True, cast=bool)
 _raw_allowed_hosts = config('ALLOWED_HOSTS', default='localhost,127.0.0.1,.tabletap.space,tabletap.space', cast=lambda v: [s.strip() for s in v.split(',')])
-# Normalize *.domain.com → .domain.com — Django uses a leading dot for
-# subdomain wildcards; the *.domain.com form (common in nginx/Traefik configs)
-# is NOT recognised by Django and causes every request to return HTTP 400.
 ALLOWED_HOSTS = [('.' + h[2:]) if h.startswith('*.') else h for h in _raw_allowed_hosts if h]
 if DEBUG:
     ALLOWED_HOSTS += ['*']
 
-# Application definition
 SHARED_APPS = [
     'django_tenants',
     'django.contrib.admin',
@@ -23,6 +20,7 @@ SHARED_APPS = [
     'django.contrib.messages',
     'django.contrib.staticfiles',
     'rest_framework',
+    'rest_framework_simplejwt',
     'corsheaders',
     'drf_yasg',
     'tenants',
@@ -81,7 +79,6 @@ TEMPLATES = [
 
 WSGI_APPLICATION = 'tabletap_console.wsgi.application'
 
-# Database
 DATABASES = {
     'default': {
         'ENGINE': 'django_tenants.postgresql_backend',
@@ -97,22 +94,27 @@ DATABASE_ROUTERS = (
     'django_tenants.routers.TenantSyncRouter',
 )
 
-# Redis Configuration
-REDIS_URL = config('REDIS_URL', default='redis://localhost:6379/0')
+REDIS_URL = config('REDIS_URL', default='')
 
-CACHES = {
-    'default': {
-        'BACKEND': 'django_redis.cache.RedisCache',
-        'LOCATION': REDIS_URL,
-        'OPTIONS': {
-            'CLIENT_CLASS': 'django_redis.client.DefaultClient',
+if REDIS_URL:
+    CACHES = {
+        'default': {
+            'BACKEND': 'django_redis.cache.RedisCache',
+            'LOCATION': REDIS_URL,
+            'OPTIONS': {
+                'CLIENT_CLASS': 'django_redis.client.DefaultClient',
+            }
         }
     }
-}
+else:
+    CACHES = {
+        'default': {
+            'BACKEND': 'django.core.cache.backends.locmem.LocMemCache',
+        }
+    }
 
-# Celery Configuration
-CELERY_BROKER_URL = REDIS_URL
-CELERY_RESULT_BACKEND = REDIS_URL
+CELERY_BROKER_URL = REDIS_URL or 'memory://'
+CELERY_RESULT_BACKEND = REDIS_URL or 'cache+memory://'
 CELERY_ACCEPT_CONTENT = ['json']
 CELERY_TASK_SERIALIZER = 'json'
 CELERY_RESULT_SERIALIZER = 'json'
@@ -124,28 +126,23 @@ CELERY_BEAT_SCHEDULE = {
     },
 }
 
-# Internationalization
 LANGUAGE_CODE = 'en-us'
 TIME_ZONE = 'UTC'
 USE_I18N = True
 USE_TZ = True
 
-# Static files
 STATIC_URL = '/static/'
 STATIC_ROOT = os.path.join(BASE_DIR, 'staticfiles')
 STATICFILES_STORAGE = 'whitenoise.storage.CompressedManifestStaticFilesStorage'
 
-# Media files
 MEDIA_URL = '/media/'
 MEDIA_ROOT = os.path.join(BASE_DIR, 'media')
 
-# Default primary key field type
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
-# REST Framework
 REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': [
-        'authentication.auth.ClerkAuthentication',
+        'authentication.auth.JWTAuthentication',
         'rest_framework.authentication.SessionAuthentication',
     ],
     'DEFAULT_PERMISSION_CLASSES': [
@@ -155,9 +152,17 @@ REST_FRAMEWORK = {
     'PAGE_SIZE': 20
 }
 
-# CORS settings
+SIMPLE_JWT = {
+    'ACCESS_TOKEN_LIFETIME': timedelta(minutes=60),
+    'REFRESH_TOKEN_LIFETIME': timedelta(days=7),
+    'ROTATE_REFRESH_TOKENS': True,
+    'BLACKLIST_AFTER_ROTATION': False,
+    'AUTH_HEADER_TYPES': ('Bearer',),
+    'USER_ID_FIELD': 'id',
+    'USER_ID_CLAIM': 'user_id',
+}
+
 if DEBUG:
-    # Allow all origins in development for easier tunneling
     CORS_ALLOW_ALL_ORIGINS = True
     CORS_ALLOW_CREDENTIALS = True
 else:
@@ -170,7 +175,6 @@ else:
         r"^https://.*\.tabletap\.space$",
     ]
 
-# CORS custom headers
 from corsheaders.defaults import default_headers
 
 CORS_ALLOW_HEADERS = list(default_headers) + [
@@ -178,29 +182,24 @@ CORS_ALLOW_HEADERS = list(default_headers) + [
     "x-store-id",
 ]
 
-# Clerk Configuration
-CLERK_SECRET_KEY = config('CLERK_SECRET_KEY', default='')
 RESEND_API_KEY = config('RESEND_API_KEY', default='')
 RESEND_FROM_EMAIL = config('RESEND_FROM_EMAIL', default='onboarding@resend.dev')
 FRONTEND_URL = config('FRONTEND_URL', default='https://tabletap.space')
+
+CLERK_SECRET_KEY = config('CLERK_SECRET_KEY', default='')
 CLERK_PUBLISHABLE_KEY = config('CLERK_PUBLISHABLE_KEY', default='')
 CLERK_WEBHOOK_SECRET = config('CLERK_WEBHOOK_SECRET', default='')
 
-# Paystack Configuration
 PAYSTACK_SECRET_KEY = config('PAYSTACK_SECRET_KEY', default='')
 PAYSTACK_PUBLIC_KEY = config('PAYSTACK_PUBLIC_KEY', default='')
 
-# AWS Configuration (for S3 storage)
 AWS_ACCESS_KEY_ID = config('AWS_ACCESS_KEY_ID', default='')
 AWS_SECRET_ACCESS_KEY = config('AWS_SECRET_ACCESS_KEY', default='')
 AWS_STORAGE_BUCKET_NAME = config('AWS_STORAGE_BUCKET_NAME', default='')
 AWS_S3_REGION_NAME = config('AWS_S3_REGION_NAME', default='us-east-1')
 
-# Use S3 for media files in production
 if not DEBUG:
     DEFAULT_FILE_STORAGE = 'storages.backends.s3boto3.S3Boto3Storage'
-
-# Custom User Model
 
 CSRF_TRUSTED_ORIGINS = [
     'http://localhost:5173',
@@ -210,10 +209,8 @@ CSRF_TRUSTED_ORIGINS = [
     'https://*.tabletap.space',
 ]
 
-
 AUTH_USER_MODEL = 'authentication.User'
 
-# Pusher Configuration
 PUSHER_APP_ID = config('PUSHER_APP_ID', default='')
 PUSHER_KEY = config('PUSHER_KEY', default='')
 PUSHER_SECRET = config('PUSHER_SECRET', default='')

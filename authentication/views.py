@@ -4,142 +4,259 @@ from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from django.contrib.auth import get_user_model
 from django.conf import settings
-from tenants.models import Tenant
-from drf_yasg.utils import swagger_auto_schema
-from drf_yasg import openapi
-import uuid
-from datetime import timedelta
 from django.utils import timezone
-import django_tenants
+from tenants.models import Tenant
+import uuid
 
 User = get_user_model()
 
-@swagger_auto_schema(
-    method='post',
-    operation_description="Handle Clerk webhooks for user events",
-    request_body=openapi.Schema(
-        type=openapi.TYPE_OBJECT,
-        properties={
-            'type': openapi.Schema(type=openapi.TYPE_STRING, description='Event type'),
-            'data': openapi.Schema(type=openapi.TYPE_OBJECT, description='User data'),
-        }
-    ),
-    responses={200: 'Webhook processed successfully'}
-)
+
+def _jwt_tokens_for_user(user):
+    from rest_framework_simplejwt.tokens import RefreshToken
+    refresh = RefreshToken.for_user(user)
+    return {
+        'access': str(refresh.access_token),
+        'refresh': str(refresh),
+    }
+
+
 @api_view(['POST'])
 @permission_classes([AllowAny])
-def clerk_webhook(request):
-    """Handle Clerk webhooks for user events"""
-    event_type = request.data.get('type')
-    user_data = request.data.get('data', {})
-    
-    if event_type == 'user.created':
-        # Create new tenant when user signs up
-        clerk_user_id = user_data.get('id')
-        email = user_data.get('email_addresses', [{}])[0].get('email_address')
-        first_name = user_data.get('first_name', '')
-        last_name = user_data.get('last_name', '')
-        
-        # Sanitize email (treat empty string as None)
-        email = email if email else None
-        
-        # Check if user already exists by email (ONLY if email is provided)
-        user = User.objects.filter(email=email).first() if email else None
-        
-        if user:
-            # Link the Clerk account but preserve existing role —
-            # invited staff must not be silently upgraded to 'owner'.
-            user.clerk_user_id = clerk_user_id
-            user.username = clerk_user_id
-            user.first_name = first_name
-            user.last_name = last_name
-            user.is_verified = True
-            user.is_active = True
-            user.save(update_fields=[
-                'clerk_user_id', 'username', 'first_name', 'last_name',
-                'is_verified', 'is_active',
-            ])
-            user_created = False
-        else:
-            # Create brand new user
-            user, user_created = User.objects.update_or_create(
-                clerk_user_id=clerk_user_id,
-                defaults={
-                    'username': clerk_user_id,
-                    'email': email,
-                    'first_name': first_name,
-                    'last_name': last_name,
-                    'is_verified': True,
-                    'role': 'owner' 
-                }
-            )
-        
-        # Get restaurant name from metadata
-        restaurant_name = user_data.get('unsafe_metadata', {}).get('restaurantName')
-        
-        # Provision tenant using shared service
-        from .services import provision_tenant_for_user
-        tenant, tenant_created = provision_tenant_for_user(user, restaurant_name)
-        
-        return Response({
-            'status': 'success',
-            'tenant_id': tenant.id,
-            'schema_name': tenant.schema_name,
-            'user_created': user_created,
-            'tenant_created': tenant_created
-        })
-    
-    return Response({'status': 'processed'})
+def register(request):
+    """Register a new user. Sends a 6-digit email verification code."""
+    email = (request.data.get('email') or '').strip().lower()
+    password = request.data.get('password', '')
+    first_name = (request.data.get('firstName') or '').strip()
+    last_name = (request.data.get('lastName') or '').strip()
 
-@swagger_auto_schema(
-    method='get',
-    operation_description="Get current user profile",
-    responses={
-        200: openapi.Response(
-            description="User profile",
-            schema=openapi.Schema(
-                type=openapi.TYPE_OBJECT,
-                properties={
-                    'success': openapi.Schema(type=openapi.TYPE_BOOLEAN),
-                    'data': openapi.Schema(
-                        type=openapi.TYPE_OBJECT,
-                        properties={
-                            'firstName': openapi.Schema(type=openapi.TYPE_STRING),
-                            'lastName': openapi.Schema(type=openapi.TYPE_STRING),
-                            'email': openapi.Schema(type=openapi.TYPE_STRING),
-                            'role': openapi.Schema(type=openapi.TYPE_STRING),
-                            'restaurantId': openapi.Schema(type=openapi.TYPE_STRING),
-                        }
-                    )
-                }
-            )
-        )
-    }
-)
-@swagger_auto_schema(
-    method='put',
-    operation_description="Update current user profile",
-    request_body=openapi.Schema(
-        type=openapi.TYPE_OBJECT,
-        properties={
-            'firstName': openapi.Schema(type=openapi.TYPE_STRING),
-            'lastName': openapi.Schema(type=openapi.TYPE_STRING),
-            'email': openapi.Schema(type=openapi.TYPE_STRING),
-        }
-    ),
-    responses={
-        200: 'Profile updated successfully',
-        400: 'Validation errors'
-    }
-)
+    if not email or not password:
+        return Response({'error': 'Email and password are required.'}, status=400)
+
+    if User.objects.filter(email=email).exists():
+        existing = User.objects.get(email=email)
+        if existing.is_verified:
+            return Response({'error': 'An account with this email already exists.'}, status=400)
+        # Update placeholder account with the submitted credentials before resending
+        existing.set_password(password)
+        if first_name:
+            existing.first_name = first_name
+        if last_name:
+            existing.last_name = last_name
+        existing.is_active = True
+        existing.save(update_fields=['password', 'first_name', 'last_name', 'is_active'])
+        code = existing.generate_verification_code()
+        _send_verification_email(existing, code)
+        return Response({'status': 'pending_verification', 'userId': existing.pk})
+
+    username = email.split('@')[0] + '_' + uuid.uuid4().hex[:6]
+    user = User.objects.create_user(
+        username=username,
+        email=email,
+        password=password,
+        first_name=first_name,
+        last_name=last_name,
+        is_verified=False,
+        is_active=True,
+        role='owner',
+    )
+
+    code = user.generate_verification_code()
+    _send_verification_email(user, code)
+
+    return Response({'status': 'pending_verification', 'userId': user.pk})
+
+
+def _send_verification_email(user, code):
+    from .services import send_email_via_resend
+    html = f"""
+    <div style="font-family: Arial, sans-serif; max-width: 480px; margin: 0 auto;">
+      <h2 style="color: #f97316;">Verify your TableTap account</h2>
+      <p>Hi {user.first_name or 'there'},</p>
+      <p>Your verification code is:</p>
+      <div style="font-size: 32px; font-weight: bold; letter-spacing: 8px; color: #f97316;
+                  background: #fff7ed; padding: 16px 24px; border-radius: 8px; display: inline-block;">
+        {code}
+      </div>
+      <p style="color: #6b7280; margin-top: 16px;">This code expires in 15 minutes.</p>
+    </div>
+    """
+    send_email_via_resend(user.email, 'Verify your TableTap account', html)
+
+
+@api_view(['POST'])
+@permission_classes([AllowAny])
+def verify_email(request):
+    """Verify email with the 6-digit code. Returns JWT tokens on success."""
+    user_id = request.data.get('userId')
+    code = (request.data.get('code') or '').strip()
+
+    if not user_id or not code:
+        return Response({'error': 'userId and code are required.'}, status=400)
+
+    try:
+        user = User.objects.get(pk=user_id)
+    except User.DoesNotExist:
+        return Response({'error': 'Invalid request.'}, status=400)
+
+    if user.email_verification_token != code:
+        return Response({'error': 'Invalid verification code.'}, status=400)
+
+    if user.email_verification_token_expires and timezone.now() > user.email_verification_token_expires:
+        return Response({'error': 'Verification code has expired. Please request a new one.'}, status=400)
+
+    user.is_verified = True
+    user.is_active = True
+    user.email_verification_token = None
+    user.email_verification_token_expires = None
+    user.save(update_fields=['is_verified', 'is_active', 'email_verification_token', 'email_verification_token_expires'])
+
+    tokens = _jwt_tokens_for_user(user)
+    return Response({
+        'status': 'verified',
+        'access': tokens['access'],
+        'refresh': tokens['refresh'],
+        'user': {
+            'id': user.pk,
+            'email': user.email,
+            'firstName': user.first_name,
+            'lastName': user.last_name,
+        },
+    })
+
+
+@api_view(['POST'])
+@permission_classes([AllowAny])
+def login(request):
+    """Authenticate with email and password. Returns JWT tokens."""
+    from django.contrib.auth import authenticate as django_authenticate
+    email = (request.data.get('email') or '').strip().lower()
+    password = request.data.get('password', '')
+
+    if not email or not password:
+        return Response({'error': 'Email and password are required.'}, status=400)
+
+    try:
+        user_obj = User.objects.get(email=email)
+    except User.DoesNotExist:
+        return Response({'error': 'Invalid email or password.'}, status=401)
+
+    user = django_authenticate(request, username=user_obj.username, password=password)
+    if user is None:
+        return Response({'error': 'Invalid email or password.'}, status=401)
+
+    if not user.is_verified:
+        code = user.generate_verification_code()
+        _send_verification_email(user, code)
+        return Response({
+            'status': 'pending_verification',
+            'userId': user.pk,
+            'message': 'Please verify your email before signing in.',
+        }, status=403)
+
+    tokens = _jwt_tokens_for_user(user)
+    return Response({
+        'access': tokens['access'],
+        'refresh': tokens['refresh'],
+        'user': {
+            'id': user.pk,
+            'email': user.email,
+            'firstName': user.first_name,
+            'lastName': user.last_name,
+        },
+    })
+
+
+@api_view(['POST'])
+@permission_classes([AllowAny])
+def token_refresh(request):
+    """Refresh the access token using a refresh token."""
+    from rest_framework_simplejwt.tokens import RefreshToken
+    from rest_framework_simplejwt.exceptions import TokenError
+    refresh_token = request.data.get('refresh')
+    if not refresh_token:
+        return Response({'error': 'Refresh token is required.'}, status=400)
+    try:
+        token = RefreshToken(refresh_token)
+        return Response({'access': str(token.access_token)})
+    except TokenError as e:
+        return Response({'error': str(e)}, status=401)
+
+
+@api_view(['POST'])
+@permission_classes([AllowAny])
+def password_reset_request(request):
+    """Send a 6-digit password reset code to the user's email."""
+    email = (request.data.get('email') or '').strip().lower()
+    if not email:
+        return Response({'error': 'Email is required.'}, status=400)
+
+    try:
+        user = User.objects.get(email=email)
+    except User.DoesNotExist:
+        return Response({'status': 'sent'})
+
+    code = user.generate_password_reset_code()
+    from .services import send_email_via_resend
+    html = f"""
+    <div style="font-family: Arial, sans-serif; max-width: 480px; margin: 0 auto;">
+      <h2 style="color: #f97316;">Reset your TableTap password</h2>
+      <p>Hi {user.first_name or 'there'},</p>
+      <p>Your password reset code is:</p>
+      <div style="font-size: 32px; font-weight: bold; letter-spacing: 8px; color: #f97316;
+                  background: #fff7ed; padding: 16px 24px; border-radius: 8px; display: inline-block;">
+        {code}
+      </div>
+      <p style="color: #6b7280; margin-top: 16px;">This code expires in 30 minutes.</p>
+    </div>
+    """
+    send_email_via_resend(user.email, 'Reset your TableTap password', html)
+    return Response({'status': 'sent', 'userId': user.pk})
+
+
+@api_view(['POST'])
+@permission_classes([AllowAny])
+def password_reset_confirm(request):
+    """Verify the reset code and set a new password. Returns JWT tokens."""
+    user_id = request.data.get('userId')
+    code = (request.data.get('code') or '').strip()
+    new_password = request.data.get('newPassword', '')
+
+    if not user_id or not code or not new_password:
+        return Response({'error': 'userId, code, and newPassword are required.'}, status=400)
+    if len(new_password) < 8:
+        return Response({'error': 'Password must be at least 8 characters.'}, status=400)
+
+    try:
+        user = User.objects.get(pk=user_id)
+    except User.DoesNotExist:
+        return Response({'error': 'Invalid request.'}, status=400)
+
+    if user.password_reset_token != code:
+        return Response({'error': 'Invalid or expired reset code.'}, status=400)
+
+    if user.password_reset_token_expires and timezone.now() > user.password_reset_token_expires:
+        return Response({'error': 'Reset code has expired. Please request a new one.'}, status=400)
+
+    user.set_password(new_password)
+    user.password_reset_token = None
+    user.password_reset_token_expires = None
+    user.is_verified = True
+    user.save(update_fields=['password', 'password_reset_token', 'password_reset_token_expires', 'is_verified'])
+
+    tokens = _jwt_tokens_for_user(user)
+    return Response({
+        'status': 'reset',
+        'access': tokens['access'],
+        'refresh': tokens['refresh'],
+    })
+
+
 @api_view(['GET', 'PUT'])
 @permission_classes([IsAuthenticated])
 def user_profile(request):
     """Get or update current user profile"""
     if request.method == 'GET':
-        # Get restaurant ID from current tenant
         restaurant_id = getattr(request.tenant, 'id', None) if hasattr(request, 'tenant') else None
-        
         return Response({
             'success': True,
             'data': {
@@ -154,74 +271,46 @@ def user_profile(request):
                 'version': '1.0.0'
             }
         })
-    
-    elif request.method == 'PUT':
-        user = request.user
-        data = request.data
-        
-        # Update allowed fields
-        if 'firstName' in data:
-            user.first_name = data['firstName']
-        if 'lastName' in data:
-            user.last_name = data['lastName']
-        if 'email' in data:
-            user.email = data['email']
-            
-        try:
-            user.save()
-            return Response({
-                'success': True,
-                'data': {
-                    'firstName': user.first_name,
-                    'lastName': user.last_name,
-                    'email': user.email,
-                    'role': user.get_tenant_role(),
-                    'restaurantId': str(getattr(request.tenant, 'id', None)) if hasattr(request, 'tenant') else None,
-                },
-                'message': 'Profile updated successfully',
-                'meta': {
-                    'timestamp': timezone.now().isoformat(),
-                    'version': '1.0.0'
-                }
-            })
-        except Exception as e:
-            return Response({
-                'success': False,
-                'message': 'Failed to update profile',
-                'errors': [str(e)],
-                'meta': {
-                    'timestamp': timezone.now().isoformat(),
-                    'version': '1.0.0'
-                }
-            }, status=status.HTTP_400_BAD_REQUEST)
 
-@swagger_auto_schema(
-    method='get',
-    operation_description="Get user's tenant information",
-    responses={
-        200: openapi.Response(
-            description="Tenant information",
-            schema=openapi.Schema(
-                type=openapi.TYPE_OBJECT,
-                properties={
-                    'tenant_id': openapi.Schema(type=openapi.TYPE_INTEGER),
-                    'schema_name': openapi.Schema(type=openapi.TYPE_STRING),
-                    'name': openapi.Schema(type=openapi.TYPE_STRING),
-                    'subscription_status': openapi.Schema(type=openapi.TYPE_STRING),
-                    'trial_end_date': openapi.Schema(type=openapi.TYPE_STRING),
-                    'is_active': openapi.Schema(type=openapi.TYPE_BOOLEAN),
-                }
-            )
-        ),
-        404: 'No tenant found for user'
-    }
-)
+    user = request.user
+    data = request.data
+    if 'firstName' in data:
+        user.first_name = data['firstName']
+    if 'lastName' in data:
+        user.last_name = data['lastName']
+    if 'email' in data:
+        user.email = data['email']
+
+    try:
+        user.save()
+        return Response({
+            'success': True,
+            'data': {
+                'firstName': user.first_name,
+                'lastName': user.last_name,
+                'email': user.email,
+                'role': user.get_tenant_role(),
+                'restaurantId': str(getattr(request.tenant, 'id', None)) if hasattr(request, 'tenant') else None,
+            },
+            'message': 'Profile updated successfully',
+            'meta': {
+                'timestamp': timezone.now().isoformat(),
+                'version': '1.0.0'
+            }
+        })
+    except Exception as e:
+        return Response({
+            'success': False,
+            'message': 'Failed to update profile',
+            'errors': [str(e)],
+            'meta': {'timestamp': timezone.now().isoformat(), 'version': '1.0.0'}
+        }, status=status.HTTP_400_BAD_REQUEST)
+
+
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def user_tenant(request):
-    """Get user's tenant information, provisioning one via JIT if it doesn't exist yet."""
-    # Always operate from the public schema — tenant records live there, and
-    # creating a new tenant from a non-public schema raises an error.
+    """Get user's tenant information, discovering or provisioning one if needed."""
     from django.db import connection as _conn
     _conn.set_schema_to_public()
     tenant = None
@@ -230,20 +319,19 @@ def user_tenant(request):
         from django_tenants.utils import tenant_context as _tc
         from staff.models import StaffMember as _SM
 
-        # Path 1 (highest priority): invited staff — search for a StaffMember record
-        # across all tenant schemas. This must run BEFORE the owner lookup so that
-        # a staff member's Clerk ID is never mistakenly matched to a spurious tenant
-        # that may have been provisioned with their Clerk ID as clerk_organization_id.
+        # Path 1: invited staff — find their StaffMember record
         for candidate in Tenant.objects.exclude(schema_name='public'):
             with _tc(candidate):
                 if _SM.objects.filter(user=request.user).exists():
                     tenant = candidate
-                    print(f"[TENANT] Staff member {request.user.email} found in tenant '{candidate.name}'")
                     break
 
-        # Path 2: owner — tenant is indexed by their Clerk user ID (only if not
-        # already found as a staff member above)
+        # Path 2: owner — look up by owner FK
         if tenant is None:
+            tenant = Tenant.objects.filter(owner=request.user).first()
+
+        # Path 2b (backward compat): fall back to clerk_organization_id
+        if tenant is None and request.user.clerk_user_id:
             tenant = Tenant.objects.filter(
                 clerk_organization_id=request.user.clerk_user_id
             ).first()
@@ -252,49 +340,13 @@ def user_tenant(request):
         return Response({
             'error': 'Tenant discovery failed',
             'detail': str(e),
-            'message': 'An unexpected error occurred. Please contact support.'
         }, status=500)
 
     if tenant is None:
-        # Path 3: truly new owner signup — JIT provision a fresh tenant.
-        # Guard: only provision if the user has a restaurant name from Clerk metadata,
-        # preventing spurious tenants being created for staff who aren't linked yet.
-        restaurant_name = None
-        if settings.CLERK_SECRET_KEY:
-            try:
-                import requests as req
-                headers = {"Authorization": f"Bearer {settings.CLERK_SECRET_KEY}"}
-                clerk_resp = req.get(
-                    f"https://api.clerk.dev/v1/users/{request.user.clerk_user_id}",
-                    headers=headers,
-                    timeout=5
-                )
-                if clerk_resp.status_code == 200:
-                    clerk_data = clerk_resp.json()
-                    restaurant_name = (
-                        clerk_data.get('unsafe_metadata', {}).get('restaurantName') or
-                        clerk_data.get('public_metadata', {}).get('restaurantName')
-                    )
-            except Exception as fetch_err:
-                print(f"[TENANT JIT] Could not fetch Clerk user data: {fetch_err}")
-
-        if not restaurant_name:
-            # No restaurant name means this is NOT a new owner — it's a staff member
-            # whose link hasn't been set up yet. Return a clear error instead of
-            # creating a spurious tenant.
-            return Response({
-                'error': 'No restaurant found',
-                'message': 'Your account is not linked to a restaurant yet. Please ask your manager to resend the invitation, or sign up via the Console.',
-            }, status=404)
-
-        from .services import provision_tenant_for_user
-        tenant, _ = provision_tenant_for_user(request.user, restaurant_name)
-
-        if not tenant:
-            return Response({
-                'error': 'Tenant provisioning failed',
-                'message': 'We could not create a restaurant for your account. Please contact support.'
-            }, status=500)
+        return Response({
+            'error': 'No restaurant found',
+            'message': 'Your account is not linked to a restaurant yet.',
+        }, status=404)
 
     return Response({
         'tenant_id': tenant.id,
@@ -312,22 +364,17 @@ def user_tenant(request):
 def provision_tenant(request):
     """
     Explicitly provision a tenant for the authenticated user.
-    Called by the frontend immediately after a new user signs up,
-    passing the restaurant name collected during registration.
     Idempotent — safe to call even if the tenant already exists.
-    Staff members are detected first and routed to their existing tenant.
     """
     from django.db import connection
     connection.set_schema_to_public()
 
-    # --- Staff path: find their existing tenant instead of creating a new one ---
     from django_tenants.utils import tenant_context as _tc
     from staff.models import StaffMember as _SM
 
     for candidate in Tenant.objects.exclude(schema_name='public'):
         with _tc(candidate):
             if _SM.objects.filter(user=request.user).exists():
-                print(f"[PROVISION] {request.user.email} is staff in '{candidate.name}' — skipping new tenant creation.")
                 return Response({
                     'tenant_id': candidate.id,
                     'schema_name': candidate.schema_name,
@@ -338,7 +385,6 @@ def provision_tenant(request):
                     'created': False,
                 })
 
-    # --- Owner path: provision or return existing tenant ---
     restaurant_name = request.data.get('restaurantName') or request.data.get('restaurant_name')
 
     from .services import provision_tenant_for_user
@@ -357,37 +403,13 @@ def provision_tenant(request):
         'created': created,
     })
 
-@swagger_auto_schema(
-    method='post',
-    operation_description="Test endpoint to verify authentication is working",
-    request_body=openapi.Schema(
-        type=openapi.TYPE_OBJECT,
-        properties={
-            'test': openapi.Schema(type=openapi.TYPE_STRING, description='Test data'),
-        }
-    ),
-    responses={
-        200: openapi.Response(
-            description="Authentication test result",
-            schema=openapi.Schema(
-                type=openapi.TYPE_OBJECT,
-                properties={
-                    'message': openapi.Schema(type=openapi.TYPE_STRING),
-                    'user': openapi.Schema(type=openapi.TYPE_STRING),
-                    'tenant': openapi.Schema(type=openapi.TYPE_STRING),
-                    'data_received': openapi.Schema(type=openapi.TYPE_OBJECT),
-                }
-            )
-        )
-    }
-)
+
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 def link_staff_account(request):
     """
-    Called by the frontend after an invited staff member completes Clerk signup.
-    Receives a signed invite token (generated at invite time) and links the new
-    Clerk account to the correct placeholder user + returns their tenant slug.
+    Called after an invited staff member completes signup.
+    Links the new account to the correct placeholder user and returns their tenant slug.
     """
     from django.core import signing
     from django.db import connection as _conn
@@ -401,37 +423,30 @@ def link_staff_account(request):
         data = signing.loads(token, salt='staff_invitation', max_age=7 * 24 * 3600)
         placeholder_id = data['user_id']
     except signing.SignatureExpired:
-        return Response({'error': 'Invitation link has expired. Please ask your manager to resend the invite.'}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({'error': 'Invitation link has expired. Please ask your manager to resend the invite.'}, status=400)
     except (signing.BadSignature, KeyError):
-        return Response({'error': 'Invalid invitation token.'}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({'error': 'Invalid invitation token.'}, status=400)
 
     try:
         placeholder = User.objects.get(id=placeholder_id)
     except User.DoesNotExist:
-        return Response({'error': 'Invitation no longer valid.'}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({'error': 'Invitation no longer valid.'}, status=400)
 
     new_user = request.user
 
     if placeholder.id == new_user.id:
         pass
-    elif not placeholder.clerk_user_id:
-        clerk_id = new_user.clerk_user_id
-
-        # 1. Clear unique fields from new_user first — avoids IntegrityError when
-        #    we later set the same clerk_user_id on the placeholder.
+    elif not placeholder.has_usable_password():
+        # Placeholder was created by staff invite system (no password yet) — merge
         from django.db import connection as _raw_conn
         with _raw_conn.cursor() as cur:
             cur.execute(
-                "UPDATE authentication_user SET clerk_user_id = NULL, username = %s WHERE id = %s",
+                "UPDATE authentication_user SET username = %s WHERE id = %s",
                 [f'_pending_delete_{new_user.id}', new_user.id],
             )
 
-        # 2. Now safely assign the real Clerk ID to the placeholder, and copy
-        #    display information (name, email) from the newly created Clerk account.
-        placeholder.clerk_user_id = clerk_id
-        placeholder.username = clerk_id
         placeholder.is_active = True
-        update_fields = ['clerk_user_id', 'username', 'is_active']
+        update_fields = ['is_active']
         if new_user.first_name and not placeholder.first_name:
             placeholder.first_name = new_user.first_name
             update_fields.append('first_name')
@@ -441,10 +456,15 @@ def link_staff_account(request):
         if new_user.email and not placeholder.email:
             placeholder.email = new_user.email
             update_fields.append('email')
+
+        # Copy the password hash from the new account to the placeholder
+        placeholder.password = new_user.password
+        update_fields.append('password')
+        placeholder.is_verified = True
+        update_fields.append('is_verified')
+
         placeholder.save(update_fields=update_fields)
 
-        # 3. Delete the now-orphaned duplicate via raw SQL so that Django ORM
-        #    cascade logic (which tries tenant-schema tables) is bypassed entirely.
         if new_user.id != placeholder.id:
             try:
                 with _raw_conn.cursor() as cur:
@@ -461,11 +481,14 @@ def link_staff_account(request):
     for candidate in Tenant.objects.exclude(schema_name='public'):
         with _tc(candidate):
             if _SM.objects.filter(user=placeholder).exists():
-                print(f"[LINK STAFF] {placeholder.email} linked to tenant '{candidate.name}'")
+                # Issue fresh JWT tokens for the placeholder (now the real account)
+                tokens = _jwt_tokens_for_user(placeholder)
                 return Response({
                     'success': True,
                     'slug': candidate.slug or candidate.schema_name,
                     'tenant_name': candidate.name,
+                    'access': tokens['access'],
+                    'refresh': tokens['refresh'],
                 })
 
     return Response({'error': 'No restaurant found for this invitation.'}, status=status.HTTP_404_NOT_FOUND)
@@ -478,7 +501,7 @@ def test_auth(request):
     return Response({
         'message': 'Authentication successful!',
         'user': request.user.email,
-        'tenant': getattr(request.tenant, 'name', 'No tenant name') if hasattr(request, 'tenant') and request.tenant else 'No tenant context',
+        'tenant': getattr(request.tenant, 'name', 'No tenant') if hasattr(request, 'tenant') and request.tenant else 'No tenant',
         'data_received': request.data
     })
 
@@ -490,10 +513,10 @@ def log_auth_event(request):
     from analytics.audit import log_action
     event = request.data.get('event', '')
     if event not in ('login', 'logout'):
-        return Response({'error': 'Invalid event. Must be "login" or "logout".'}, status=400)
+        return Response({'error': 'Invalid event.'}, status=400)
 
     action = 'user_login' if event == 'login' else 'user_logout'
     user = request.user
-    label = getattr(user, 'email', '') or getattr(user, 'username', '') or str(user.pk)
+    label = getattr(user, 'email', '') or str(user.pk)
     log_action(request, action=action, entity_type='user', entity_id=str(user.pk), entity_label=label)
     return Response({'status': 'logged'})

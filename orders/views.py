@@ -125,7 +125,7 @@ class OrderViewSet(viewsets.ModelViewSet):
         order.payment_status = 'paid'
         order.payment_method = payment_method
         order.processed_by_name = actor_name
-        if order.status in ('pending', 'preparing', 'ready'):
+        if order.status in ('pending', 'confirmed', 'preparing', 'ready'):
             order.status = 'completed'
         order.save()
         self._trigger_pusher('order-updated', order)

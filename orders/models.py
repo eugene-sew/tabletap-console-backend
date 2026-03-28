@@ -68,10 +68,12 @@ class OrderItem(models.Model):
 
 class OrderReview(models.Model):
     tenant = models.ForeignKey('tenants.Tenant', on_delete=models.CASCADE, related_name='reviews', null=True, blank=True)
-    order = models.OneToOneField(Order, on_delete=models.CASCADE, related_name='review')
+    order = models.OneToOneField(Order, on_delete=models.CASCADE, related_name='review', null=True, blank=True)
     rating = models.IntegerField(default=5)
     comment = models.TextField(blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     def __str__(self):
-        return f"Review for {self.order.order_number} - {self.rating} stars"
+        if self.order:
+            return f"Review for {self.order.order_number} - {self.rating} stars"
+        return f"General feedback - {self.rating} stars"

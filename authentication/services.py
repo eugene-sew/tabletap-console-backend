@@ -43,10 +43,6 @@ def provision_tenant_for_user(user, restaurant_name=None):
     first_name = user.first_name
     last_name = user.last_name
     email = user.email
-    clerk_user_id = user.clerk_user_id
-
-    if not clerk_user_id:
-        return None, False
 
     if not restaurant_name:
         if first_name or last_name:
@@ -54,14 +50,14 @@ def provision_tenant_for_user(user, restaurant_name=None):
         elif email:
             restaurant_name = f"{email.split('@')[0]}'s Restaurant"
         else:
-            restaurant_name = f"Restaurant {clerk_user_id[-4:]}"
+            restaurant_name = f"Restaurant {str(user.pk)[-4:]}"
 
     tenant, tenant_created = Tenant.objects.get_or_create(
-        clerk_organization_id=clerk_user_id,
+        owner=user,
         defaults={
             'schema_name': f"tenant_{uuid.uuid4().hex[:8]}",
             'name': restaurant_name,
-            'contact_email': email or f"{clerk_user_id}@tabletap.space",
+            'contact_email': email or f"user{user.pk}@tabletap.space",
             'subscription_status': 'trial',
             'trial_end_date': timezone.now() + timedelta(days=7),
         }
@@ -96,3 +92,30 @@ def provision_tenant_for_user(user, restaurant_name=None):
         )
 
     return tenant, tenant_created
+
+
+def send_email_via_resend(to_email, subject, html_body):
+    """Send an email using the Resend API."""
+    from django.conf import settings
+    import resend
+
+    api_key = getattr(settings, 'RESEND_API_KEY', '')
+    from_email = getattr(settings, 'RESEND_FROM_EMAIL', 'onboarding@resend.dev')
+
+    if not api_key:
+        print(f"[EMAIL] RESEND_API_KEY not set — skipping email to {to_email}")
+        print(f"[EMAIL] Subject: {subject}")
+        return False
+
+    try:
+        resend.api_key = api_key
+        resend.Emails.send({
+            "from": from_email,
+            "to": [to_email],
+            "subject": subject,
+            "html": html_body,
+        })
+        return True
+    except Exception as e:
+        print(f"[EMAIL] Failed to send email to {to_email}: {e}")
+        return False

@@ -16,7 +16,8 @@ class Command(BaseCommand):
                 schema_name='public',
                 defaults={
                     'name': 'TableTap Public',
-                    'slug': 'public'
+                    'slug': 'public',
+                    'contact_email': 'admin@tabletap.local',
                 }
             )
             

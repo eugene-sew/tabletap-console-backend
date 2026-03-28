@@ -33,9 +33,20 @@ class ReviewSerializer(serializers.ModelSerializer):
         model = OrderReview
         fields = ['id', 'order', 'rating', 'comment', 'created_at']
         read_only_fields = ['id', 'created_at']
+        extra_kwargs = {
+            'order': {'required': False, 'allow_null': True},
+        }
 
     def create(self, validated_data):
-        # Get tenant from order if not provided in context
         order = validated_data.get('order')
-        tenant = order.tenant if order else None
+        request = self.context.get('request')
+        # Resolve tenant from order, then from request header
+        if order:
+            tenant = order.tenant
+        elif request:
+            from tenants.models import Tenant
+            tenant_id = request.headers.get('X-Tenant-Id')
+            tenant = Tenant.objects.filter(schema_name=tenant_id).first() if tenant_id else None
+        else:
+            tenant = None
         return OrderReview.objects.create(tenant=tenant, **validated_data)
