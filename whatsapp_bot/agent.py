@@ -143,15 +143,52 @@ CUSTOMER_TOOL_DECLARATIONS = [
 OWNER_TOOL_DECLARATIONS = [
     {
         'name': 'get_metrics_summary',
-        'description': "Get sales metrics, revenue, order counts, payment method breakdown, AOV, and top-selling items.",
+        'description': "Get sales metrics, revenue, order counts, payment method breakdown, AOV, and top-selling items across any historical period (today, yesterday, this_week, last_week, this_month, last_month, this_year, all_time, or custom start_date/end_date).",
         'parameters': {
             'type': 'OBJECT',
             'properties': {
                 'period': {
                     'type': 'STRING',
-                    'enum': ['today', 'week', 'month'],
-                    'description': "Time window for metrics. Defaults to 'today'.",
+                    'enum': ['today', 'yesterday', 'this_week', 'last_week', 'this_month', 'last_month', 'this_year', 'all_time'],
+                    'description': "Time window for metrics. E.g. 'yesterday', 'last_week', 'last_month', 'all_time'. Defaults to 'today'.",
                 },
+                'start_date': {
+                    'type': 'STRING',
+                    'description': 'Optional start date in YYYY-MM-DD format for custom historical ranges.',
+                },
+                'end_date': {
+                    'type': 'STRING',
+                    'description': 'Optional end date in YYYY-MM-DD format for custom historical ranges.',
+                },
+            },
+        },
+    },
+    {
+        'name': 'search_historical_orders',
+        'description': 'Search, filter, and inspect past orders by date, customer name, phone number, order number, or status.',
+        'parameters': {
+            'type': 'OBJECT',
+            'properties': {
+                'query': {'type': 'STRING', 'description': 'Search keyword (order #, customer name, or dish name)'},
+                'date': {'type': 'STRING', 'description': 'Specific date to look up in YYYY-MM-DD format'},
+                'status': {'type': 'STRING', 'description': 'Filter by status: completed, cancelled, pending, preparing, ready'},
+                'customer_phone': {'type': 'STRING', 'description': 'Customer phone number to search for past orders'},
+                'limit': {'type': 'INTEGER', 'description': 'Maximum number of orders to return (default 10)'},
+            },
+        },
+    },
+    {
+        'name': 'get_top_selling_items',
+        'description': 'Get a ranked leaderboard of top-selling dishes with quantities and revenue over any historical timeframe.',
+        'parameters': {
+            'type': 'OBJECT',
+            'properties': {
+                'period': {
+                    'type': 'STRING',
+                    'enum': ['today', 'yesterday', 'this_week', 'last_week', 'this_month', 'last_month', 'all_time'],
+                    'description': "Timeframe for the top-seller leaderboard. Defaults to 'this_month'.",
+                },
+                'limit': {'type': 'INTEGER', 'description': 'Number of items to rank (default 5)'},
             },
         },
     },
@@ -274,22 +311,25 @@ Currency: {currency}
 Current time: {timezone.now().strftime('%H:%M, %A %d %B %Y')}
 
 YOU HAVE FULL ADMINISTRATIVE POWERS OVER THIS RESTAURANT:
-1. **Financial & Sales Analytics**:
-   - Give concise, executive summaries on revenue, order volumes, average order value (AOV), and payment breakdowns (Cash vs MoMo vs Card).
-   - Use `get_metrics_summary` with `period='today'`, `'week'`, or `'month'`.
-2. **Menu Management**:
+1. **Financial & Sales Analytics (Current & Historical Data)**:
+   - Provide executive summaries on revenue, order volumes, average order value (AOV), and payment breakdowns (Cash vs MoMo vs Card).
+   - Answer queries for ANY historical timeframe: *yesterday, last week, this month, last month, this year, all time*, or custom date ranges (e.g. `2026-08-01` to `2026-08-15`).
+   - Use `get_metrics_summary` and `get_top_selling_items`.
+2. **Order History & Search**:
+   - Look up past orders by customer name, phone number, order number, or date with `search_historical_orders`.
+3. **Menu Management**:
    - You can add new dishes with `add_menu_item`. If the owner specifies a category that doesn't exist yet, it is automatically created!
    - You can update prices, descriptions, names, or categories with `update_menu_item`.
    - You can pause (86) or restore items with `toggle_item_availability`.
    - You can inspect the menu with `get_menu`.
-3. **Live Kitchen Operations**:
+4. **Live Kitchen Operations**:
    - View active orders and wait times with `get_live_orders`.
    - Update order status (mark ready, completed, cancelled) with `update_order_status`.
 
 RULES:
-- Be fast, professional, and clear. Format numbers with emojis (💰, 📦, 🍳, ⏳).
+- Be fast, professional, and clear. Format numbers with emojis (💰, 📦, 🍳, ⏳, 🏆).
 - Confirm every menu addition or price change with the exact details updated.
-- When an owner asks "How are we doing?", give today's revenue, order count, top item, and any pending orders."""
+- When asked about historical performance, clearly state the date range or period being summarized."""
 
 
 # ---------------------------------------------------------------------------
@@ -342,7 +382,27 @@ def _dispatch_customer_tool(name: str, args: dict, tenant_slug: str, session: di
 
 def _dispatch_owner_tool(name: str, args: dict, tenant_slug: str) -> str:
     if name == 'get_metrics_summary':
-        result = T.get_metrics_summary(tenant_slug, args.get('period', 'today'))
+        result = T.get_metrics_summary(
+            tenant_slug=tenant_slug,
+            period=args.get('period', 'today'),
+            start_date=args.get('start_date'),
+            end_date=args.get('end_date'),
+        )
+    elif name == 'search_historical_orders':
+        result = T.search_historical_orders(
+            tenant_slug=tenant_slug,
+            query=args.get('query'),
+            date=args.get('date'),
+            status=args.get('status'),
+            customer_phone=args.get('customer_phone'),
+            limit=args.get('limit', 10),
+        )
+    elif name == 'get_top_selling_items':
+        result = T.get_top_selling_items(
+            tenant_slug=tenant_slug,
+            period=args.get('period', 'this_month'),
+            limit=args.get('limit', 5),
+        )
     elif name == 'get_live_orders':
         result = T.get_live_orders(tenant_slug)
     elif name == 'update_order_status':

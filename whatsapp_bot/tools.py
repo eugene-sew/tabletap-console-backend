@@ -239,49 +239,115 @@ def get_live_orders(tenant_slug: str) -> dict:
         }
 
 
-def get_metrics_summary(tenant_slug: str, period: str = 'today') -> dict:
-    """Owner: order count, revenue, breakdown, AOV, and top items."""
+def get_metrics_summary(
+    tenant_slug: str,
+    period: str = 'today',
+    start_date: str = None,
+    end_date: str = None,
+) -> dict:
+    """Owner: order count, revenue, breakdown, AOV, and top items across historical time ranges."""
     with _with_tenant(tenant_slug):
         from orders.models import Order, OrderItem
         from django.utils import timezone
         from django.db.models import Sum, Count, Avg
-        from datetime import timedelta
+        from datetime import datetime, timedelta
 
         now = timezone.now()
-        if period == 'week':
-            start_date = (now - timedelta(days=7)).date()
-            label = "Last 7 Days"
-        elif period == 'month':
-            start_date = (now - timedelta(days=30)).date()
-            label = "Last 30 Days"
-        else:
-            start_date = now.date()
-            label = "Today"
+        today = now.date()
+        s_date = None
+        e_date = None
+        label = "Custom Range"
 
-        period_orders = Order.objects.filter(created_at__date__gte=start_date)
-        paid_orders = period_orders.filter(payment_status='paid')
+        if start_date:
+            try:
+                s_date = datetime.strptime(start_date, '%Y-%m-%d').date()
+                if end_date:
+                    e_date = datetime.strptime(end_date, '%Y-%m-%d').date()
+                else:
+                    e_date = s_date
+                label = f"{s_date} to {e_date}"
+            except ValueError:
+                pass
+
+        if not s_date:
+            norm_period = (period or 'today').lower().replace(' ', '_').replace('-', '_')
+            if norm_period in ('today', 'day'):
+                s_date = today
+                e_date = today
+                label = f"Today ({today})"
+            elif norm_period == 'yesterday':
+                s_date = today - timedelta(days=1)
+                e_date = s_date
+                label = f"Yesterday ({s_date})"
+            elif norm_period in ('this_week', 'week'):
+                # Monday of current week
+                s_date = today - timedelta(days=today.weekday())
+                e_date = today
+                label = f"This Week (Since {s_date})"
+            elif norm_period in ('last_week', 'previous_week'):
+                monday_last_week = today - timedelta(days=today.weekday() + 7)
+                sunday_last_week = monday_last_week + timedelta(days=6)
+                s_date = monday_last_week
+                e_date = sunday_last_week
+                label = f"Last Week ({monday_last_week} to {sunday_last_week})"
+            elif norm_period in ('this_month', 'month'):
+                s_date = today.replace(day=1)
+                e_date = today
+                label = f"This Month ({s_date.strftime('%B %Y')})"
+            elif norm_period in ('last_month', 'previous_month'):
+                first_this_month = today.replace(day=1)
+                last_prev_month = first_this_month - timedelta(days=1)
+                s_date = last_prev_month.replace(day=1)
+                e_date = last_prev_month
+                label = f"Last Month ({s_date.strftime('%B %Y')})"
+            elif norm_period in ('this_year', 'year'):
+                s_date = today.replace(month=1, day=1)
+                e_date = today
+                label = f"This Year ({today.year})"
+            elif norm_period in ('all_time', 'all', 'total'):
+                s_date = None
+                e_date = None
+                label = "All Time"
+            else:
+                s_date = today
+                e_date = today
+                label = f"Today ({today})"
+
+        # Query orders in date range
+        orders_qs = Order.objects.all()
+        if s_date:
+            orders_qs = orders_qs.filter(created_at__date__gte=s_date)
+        if e_date:
+            orders_qs = orders_qs.filter(created_at__date__lte=e_date)
+
+        paid_orders = orders_qs.filter(payment_status='paid')
 
         revenue = paid_orders.aggregate(total=Sum('total_amount'))['total'] or 0
         aov = paid_orders.aggregate(avg=Avg('total_amount'))['avg'] or 0
-        order_count = period_orders.count()
-        completed = period_orders.filter(status='completed').count()
-        pending = period_orders.filter(status='pending').count()
-        preparing = period_orders.filter(status='preparing').count()
-        cancelled = period_orders.filter(status='cancelled').count()
+        order_count = orders_qs.count()
+        completed = orders_qs.filter(status='completed').count()
+        pending = orders_qs.filter(status='pending').count()
+        preparing = orders_qs.filter(status='preparing').count()
+        cancelled = orders_qs.filter(status='cancelled').count()
 
         # Payment methods breakdown
         momo_rev = paid_orders.filter(payment_method__icontains='momo').aggregate(t=Sum('total_amount'))['t'] or 0
         cash_rev = paid_orders.filter(payment_method__icontains='cash').aggregate(t=Sum('total_amount'))['t'] or 0
         card_rev = paid_orders.filter(payment_method__icontains='card').aggregate(t=Sum('total_amount'))['t'] or 0
 
-        # Top item
-        top = (
-            OrderItem.objects.filter(order__created_at__date__gte=start_date)
-            .values('name')
-            .annotate(cnt=Count('id'), qty=Sum('quantity'))
-            .order_by('-qty')
-            .first()
+        # Top 3 items in this time window
+        item_qs = OrderItem.objects.filter(order__in=orders_qs)
+        top_items = (
+            item_qs.values('name')
+            .annotate(cnt=Count('id'), qty=Sum('quantity'), total_sales=Sum('price'))
+            .order_by('-qty')[:3]
         )
+
+        top_formatted = [
+            f"{t['name']} ({t['qty']} sold • GHS {float(t['total_sales'] or 0):.2f})"
+            for t in top_items
+        ]
+
         return {
             'period': label,
             'order_count': order_count,
@@ -296,8 +362,126 @@ def get_metrics_summary(tenant_slug: str, period: str = 'today') -> dict:
                 'cash': float(cash_rev),
                 'card': float(card_rev),
             },
-            'top_item': f"{top['name']} ({top['qty']} sold)" if top else 'N/A',
+            'top_items': top_formatted,
+            'top_item': top_formatted[0] if top_formatted else 'N/A',
         }
+
+
+def search_historical_orders(
+    tenant_slug: str,
+    query: str = None,
+    date: str = None,
+    status: str = None,
+    customer_phone: str = None,
+    limit: int = 10,
+) -> dict:
+    """Owner: search and inspect past orders by date, customer, status, or search term."""
+    with _with_tenant(tenant_slug):
+        from orders.models import Order
+        from django.db.models import Q
+        from datetime import datetime
+
+        orders_qs = Order.objects.all().order_by('-created_at')
+
+        if date:
+            try:
+                d = datetime.strptime(date, '%Y-%m-%d').date()
+                orders_qs = orders_qs.filter(created_at__date=d)
+            except ValueError:
+                pass
+
+        if status:
+            orders_qs = orders_qs.filter(status__iexact=status.strip())
+
+        if customer_phone:
+            clean_p = ''.join(c for c in customer_phone if c.isdigit())
+            orders_qs = orders_qs.filter(customer_phone__icontains=clean_p)
+
+        if query:
+            q = query.strip()
+            orders_qs = orders_qs.filter(
+                Q(order_number__icontains=q) |
+                Q(customer_name__icontains=q) |
+                Q(items__name__icontains=q)
+            ).distinct()
+
+        results = []
+        for o in orders_qs[:max(1, min(limit, 25))]:
+            items = [f"{i.quantity}x {i.name}" for i in o.items.all()]
+            results.append({
+                'order_number': o.order_number,
+                'created_at': o.created_at.strftime('%Y-%m-%d %H:%M'),
+                'customer_name': o.customer_name or 'Guest',
+                'customer_phone': o.customer_phone or 'N/A',
+                'status': o.status,
+                'payment_status': o.payment_status,
+                'payment_method': o.payment_method or 'cash',
+                'total_amount': float(o.total_amount),
+                'items': items,
+            })
+
+        return {
+            'total_matches': orders_qs.count(),
+            'returned_count': len(results),
+            'orders': results,
+        }
+
+
+def get_top_selling_items(tenant_slug: str, period: str = 'this_month', limit: int = 5) -> dict:
+    """Owner: Get top-selling dishes leaderboard with quantities and revenue."""
+    with _with_tenant(tenant_slug):
+        from orders.models import OrderItem, Order
+        from django.utils import timezone
+        from django.db.models import Sum, Count
+        from datetime import timedelta
+
+        now = timezone.now()
+        today = now.date()
+        norm_period = (period or 'this_month').lower().replace(' ', '_')
+
+        if norm_period == 'today':
+            s_date = today
+        elif norm_period == 'yesterday':
+            s_date = today - timedelta(days=1)
+        elif norm_period == 'this_week':
+            s_date = today - timedelta(days=today.weekday())
+        elif norm_period == 'last_month':
+            first_this_month = today.replace(day=1)
+            last_prev_month = first_this_month - timedelta(days=1)
+            s_date = last_prev_month.replace(day=1)
+        elif norm_period == 'all_time':
+            s_date = None
+        else:
+            s_date = today.replace(day=1)
+
+        qs = OrderItem.objects.all()
+        if s_date:
+            qs = qs.filter(order__created_at__date__gte=s_date)
+
+        leaderboard = (
+            qs.values('name')
+            .annotate(
+                total_qty=Sum('quantity'),
+                total_revenue=Sum('price'),
+                orders_count=Count('order_id', distinct=True),
+            )
+            .order_by('-total_qty')[:limit]
+        )
+
+        return {
+            'period': period,
+            'leaderboard': [
+                {
+                    'rank': idx + 1,
+                    'name': item['name'],
+                    'quantity_sold': item['total_qty'],
+                    'revenue': float(item['total_revenue'] or 0),
+                    'orders_count': item['orders_count'],
+                }
+                for idx, item in enumerate(leaderboard)
+            ],
+        }
+
 
 
 def add_menu_item_tool(
