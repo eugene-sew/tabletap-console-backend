@@ -28,6 +28,7 @@ SHARED_APPS = [
     'subscriptions',
     'analytics',
     'superadmin',
+    'whatsapp_bot',
 ]
 
 TENANT_APPS = [
@@ -239,3 +240,22 @@ PUSHER_APP_ID = config('PUSHER_APP_ID', default='')
 PUSHER_KEY = config('PUSHER_KEY', default='')
 PUSHER_SECRET = config('PUSHER_SECRET', default='')
 PUSHER_CLUSTER = config('PUSHER_CLUSTER', default='eu')
+
+# ── WhatsApp Bot ──────────────────────────────────────────────────────────────
+# Google Gemini API
+GEMINI_API_KEY = config('GEMINI_API_KEY', default='')
+
+# Meta / WhatsApp Cloud API
+META_APP_SECRET = config('META_APP_SECRET', default='')       # For HMAC signature verification
+META_VERIFY_TOKEN = config('META_VERIFY_TOKEN', default='tabletap_wa_verify')  # Webhook verify token
+
+# Default phone number (single-number mode for testing / small deployments)
+# Per-tenant numbers are stored in TenantWhatsAppAccount model.
+META_PHONE_NUMBER_ID = config('META_PHONE_NUMBER_ID', default='')
+META_ACCESS_TOKEN = config('META_ACCESS_TOKEN', default='')
+# ── Hostinger API (DNS & Subdomain Management) ──────────────────────────────
+HOSTINGER_API_TOKEN = config('HOSTINGER_API_TOKEN', default='')
+HOSTINGER_BASE_DOMAIN = config('HOSTINGER_BASE_DOMAIN', default='tabletap.space')
+HOSTINGER_CNAME_TARGET = config('HOSTINGER_CNAME_TARGET', default='8534e62137f12ea9.vercel-dns-017.com.')
+HOSTINGER_API_BASE = config('HOSTINGER_API_BASE', default='https://developers.hostinger.com')
+META_DEFAULT_TENANT_SLUG = config('META_DEFAULT_TENANT_SLUG', default='')

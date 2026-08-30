@@ -96,26 +96,29 @@ def provision_tenant_for_user(user, restaurant_name=None):
 
 def send_email_via_resend(to_email, subject, html_body):
     """Send an email using the Resend API."""
+    import logging
     from django.conf import settings
     import resend
 
+    logger = logging.getLogger(__name__)
     api_key = getattr(settings, 'RESEND_API_KEY', '')
     from_email = getattr(settings, 'RESEND_FROM_EMAIL', 'onboarding@resend.dev')
 
     if not api_key:
-        print(f"[EMAIL] RESEND_API_KEY not set — skipping email to {to_email}")
-        print(f"[EMAIL] Subject: {subject}")
+        logger.warning(f"[EMAIL] RESEND_API_KEY not set — skipping email to {to_email}")
         return False
 
     try:
         resend.api_key = api_key
-        resend.Emails.send({
+        response = resend.Emails.send({
             "from": from_email,
             "to": [to_email],
             "subject": subject,
             "html": html_body,
         })
+        logger.info(f"[EMAIL] Sent email to {to_email} successfully (id={response.get('id')})")
         return True
     except Exception as e:
-        print(f"[EMAIL] Failed to send email to {to_email}: {e}")
+        logger.error(f"[EMAIL] Failed to send email to {to_email} via Resend: {e}")
         return False
+

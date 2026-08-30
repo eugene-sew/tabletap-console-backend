@@ -33,6 +33,7 @@ urlpatterns = [
     path('api/tables/', include('restaurant_tables.urls')),
     path('api/menu/', include('menu.urls')),
     path('api/orders/', include('orders.urls')),
+    path('api/whatsapp/', include('whatsapp_bot.urls')),
     # POS specific alias
     path('api/config/', restaurant_current, name='pos_config_alias'),
 ]

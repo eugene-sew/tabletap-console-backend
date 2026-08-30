@@ -7,6 +7,7 @@ from django.utils.text import slugify
 class Tenant(TenantMixin):
     name = models.CharField(max_length=100)
     slug = models.SlugField(max_length=100, blank=True, null=True)
+    slug_change_count = models.IntegerField(default=0)
     description = models.TextField(blank=True)
     created_on = models.DateTimeField(auto_now_add=True)
     is_active = models.BooleanField(default=True)

@@ -3,11 +3,16 @@ services:
     build: .
     pull_policy: always
     ports:
-      - "3001:8000" # Changed to match frontend API expectations
+      - "3001:8000"
+    env_file:
+      - .env
     environment:
       - DEBUG=True
       - DB_HOST=db
       - DB_PORT=5432
+      - DB_USER=postgres
+      - DB_PASSWORD=mysecretpassword
+      - DB_NAME=tabletap_console
       - REDIS_URL=redis://redis:6379/0
     depends_on:
       - db
@@ -31,6 +36,50 @@ services:
   celery:
     build: .
     command: celery -A tabletap_console worker -l info
+    env_file:
+      - .env
+    environment:
+      - DEBUG=True
+      - DB_HOST=db
+      - DB_PORT=5432
+      - DB_USER=postgres
+      - DB_PASSWORD=mysecretpassword
+      - DB_NAME=tabletap_console
+      - REDIS_URL=redis://redis:6379/0
+    depends_on:
+      - db
+      - redis
+    volumes:
+      - .:/app
+
+  celery-beat:
+    build: .
+    command: celery -A tabletap_console beat -l info
+    env_file:
+      - .env
+    environment:
+      - DEBUG=True
+      - DB_HOST=db
+      - DB_PORT=5432
+      - DB_USER=postgres
+      - DB_PASSWORD=mysecretpassword
+      - DB_NAME=tabletap_console
+      - REDIS_URL=redis://redis:6379/0
+    depends_on:
+      - db
+      - redis
+      - celery
+    volumes:
+      - .:/app
+
+  migrate:
+    build: .
+    command: >
+      sh -c "python manage.py migrate_schemas --shared &&
+             python manage.py migrate_schemas &&
+             echo 'Migrations complete'"
+    env_file:
+      - .env
     environment:
       - DEBUG=True
       - DB_HOST=db
@@ -38,9 +87,10 @@ services:
       - REDIS_URL=redis://redis:6379/0
     depends_on:
       - db
-      - redis
     volumes:
       - .:/app
+    profiles:
+      - migrate
 
 volumes:
   postgres_data:

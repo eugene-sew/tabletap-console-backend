@@ -67,6 +67,10 @@ def register(request):
 
 
 def _send_verification_email(user, code):
+    import logging
+    logger = logging.getLogger(__name__)
+    logger.info(f"🔑 [VERIFICATION CODE] Code for {user.email}: {code}")
+
     from .services import send_email_via_resend
     html = f"""
     <div style="font-family: Arial, sans-serif; max-width: 480px; margin: 0 auto;">
@@ -80,7 +84,7 @@ def _send_verification_email(user, code):
       <p style="color: #6b7280; margin-top: 16px;">This code expires in 15 minutes.</p>
     </div>
     """
-    send_email_via_resend(user.email, 'Verify your TableTap account', html)
+    return send_email_via_resend(user.email, 'Verify your TableTap account', html)
 
 
 @api_view(['POST'])

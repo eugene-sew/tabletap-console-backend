@@ -48,6 +48,7 @@ urlpatterns = [
     path('api/menu/', include('menu.urls')),
     path('api/orders/', include('orders.urls')),
     path('api/superadmin/', include('superadmin.urls')),
+    path('api/whatsapp/', include('whatsapp_bot.urls')),
     
     # Swagger URLs
     path('swagger<format>/', schema_view.without_ui(cache_timeout=0), name='schema-json'),
