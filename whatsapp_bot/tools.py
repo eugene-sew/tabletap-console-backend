@@ -214,28 +214,53 @@ def place_order(
 # ---------------------------------------------------------------------------
 
 def get_live_orders(tenant_slug: str) -> dict:
-    """Owner: get all active (non-completed) orders."""
+    """Owner: get all active (pending, preparing, ready) orders with detailed item breakdowns."""
     with _with_tenant(tenant_slug):
         from orders.models import Order
+        from django.utils import timezone
+
         active = Order.objects.filter(
             status__in=['pending', 'preparing', 'ready']
-        ).order_by('-created_at')[:20]
+        ).order_by('-created_at')[:25]
+
+        pending_orders = []
+        preparing_orders = []
+        ready_orders = []
+        all_orders = []
+
+        now = timezone.now()
+
+        for o in active:
+            items = [f"{i.quantity}x {i.name}" for i in o.items.all()]
+            mins = int((now - o.created_at).total_seconds() / 60)
+            order_info = {
+                'order_number': o.order_number,
+                'status': o.status,
+                'customer_name': o.customer_name or 'Guest',
+                'customer_phone': o.customer_phone or '',
+                'order_type': o.order_type,
+                'total': float(o.total_amount),
+                'items': items,
+                'minutes_ago': mins,
+                'created_time': o.created_at.strftime('%H:%M'),
+            }
+            all_orders.append(order_info)
+            if o.status == 'pending':
+                pending_orders.append(order_info)
+            elif o.status == 'preparing':
+                preparing_orders.append(order_info)
+            elif o.status == 'ready':
+                ready_orders.append(order_info)
+
         return {
-            'count': active.count(),
-            'orders': [
-                {
-                    'order_number': o.order_number,
-                    'status': o.status,
-                    'customer_name': o.customer_name or 'Guest',
-                    'order_type': o.order_type,
-                    'total': float(o.total_amount),
-                    'items_count': o.items.count(),
-                    'minutes_ago': int((
-                        __import__('django.utils.timezone', fromlist=['now']).now() - o.created_at
-                    ).total_seconds() / 60),
-                }
-                for o in active
-            ],
+            'total_active_count': len(all_orders),
+            'new_unaccepted_pending_count': len(pending_orders),
+            'preparing_in_kitchen_count': len(preparing_orders),
+            'ready_for_pickup_count': len(ready_orders),
+            'pending_orders': pending_orders,
+            'preparing_orders': preparing_orders,
+            'ready_orders': ready_orders,
+            'orders': all_orders,
         }
 
 

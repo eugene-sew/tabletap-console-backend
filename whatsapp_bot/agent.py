@@ -310,26 +310,29 @@ Restaurant: {tenant.name}
 Currency: {currency}
 Current time: {timezone.now().strftime('%H:%M, %A %d %B %Y')}
 
-YOU HAVE FULL ADMINISTRATIVE POWERS OVER THIS RESTAURANT:
-1. **Financial & Sales Analytics (Current & Historical Data)**:
-   - Provide executive summaries on revenue, order volumes, average order value (AOV), and payment breakdowns (Cash vs MoMo vs Card).
-   - Answer queries for ANY historical timeframe: *yesterday, last week, this month, last month, this year, all time*, or custom date ranges (e.g. `2026-08-01` to `2026-08-15`).
-   - Use `get_metrics_summary` and `get_top_selling_items`.
-2. **Order History & Search**:
-   - Look up past orders by customer name, phone number, order number, or date with `search_historical_orders`.
-3. **Menu Management**:
-   - You can add new dishes with `add_menu_item`. If the owner specifies a category that doesn't exist yet, it is automatically created!
-   - You can update prices, descriptions, names, or categories with `update_menu_item`.
-   - You can pause (86) or restore items with `toggle_item_availability`.
-   - You can inspect the menu with `get_menu`.
-4. **Live Kitchen Operations**:
-   - View active orders and wait times with `get_live_orders`.
-   - Update order status (mark ready, completed, cancelled) with `update_order_status`.
+YOU HAVE FULL ACCESS TO LIVE AND HISTORICAL RESTAURANT DATA VIA YOUR TOOLS:
+1. **Historical & Current Financial Analytics**:
+   - You HAVE direct access to past records, archive data, and historical sales.
+   - For historical queries (*"yesterday"*, *"last week"*, *"last month"*, *"all time"*, or specific dates), ALWAYS call `get_metrics_summary` with `period` or `start_date`/`end_date`.
+   - For top-seller leaderboards, ALWAYS call `get_top_selling_items(period=...)`.
+   - NEVER tell the owner you lack historical archives or past sales data.
+2. **Order Lookups & History**:
+   - Look up past orders by customer, date, or order number with `search_historical_orders`.
+3. **Live Orders & Kitchen Status**:
+   - When asked about *"new orders"*, *"unaccepted orders"*, *"pending orders"*, or *"kitchen status"*, ALWAYS call `get_live_orders`.
+   - Group and report orders by status: 🟡 Pending (needs acceptance), 🔵 Preparing (in kitchen), 🟢 Ready (for pickup).
+4. **Menu Management**:
+   - Add new items with `add_menu_item` (categories are created automatically if new).
+   - Update prices, descriptions, names, or categories with `update_menu_item`.
+   - 86/pause items with `toggle_item_availability`.
+   - View menu with `get_menu`.
+5. **Order Control**:
+   - Change order statuses with `update_order_status` (e.g. mark ready, completed, cancelled).
 
 RULES:
 - Be fast, professional, and clear. Format numbers with emojis (💰, 📦, 🍳, ⏳, 🏆).
 - Confirm every menu addition or price change with the exact details updated.
-- When asked about historical performance, clearly state the date range or period being summarized."""
+- Always use tools to fetch actual numbers — never guess or refuse valid requests."""
 
 
 # ---------------------------------------------------------------------------
@@ -572,10 +575,8 @@ def run_owner_agent(message: str, session: dict, tenant) -> tuple[str, dict]:
     try:
         chat = model.start_chat(history=history)
         system = _owner_system_prompt(tenant)
-        response = chat.send_message(
-            [system + '\n\nOwner message: ' + message] if not history else message,
-            tools=tools,
-        )
+        prompt_with_system = f"{system}\n\nOwner message: {message}"
+        response = chat.send_message(prompt_with_system, tools=tools)
 
         reply = ''
         for _ in range(3):
