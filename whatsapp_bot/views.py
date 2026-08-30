@@ -120,6 +120,9 @@ def connect_status(request):
             'phone_number': account.phone_number,
             'bot_display_name': account.bot_display_name,
             'greeting_message': account.greeting_message,
+            'owner_phone_number': account.owner_phone_number,
+            'enable_delayed_order_alerts': account.enable_delayed_order_alerts,
+            'enable_daily_reports': account.enable_daily_reports,
             'connected_at': account.connected_at.isoformat(),
         })
     except TenantWhatsAppAccount.DoesNotExist:
@@ -129,7 +132,7 @@ def connect_status(request):
 @api_view(['PUT', 'PATCH'])
 @permission_classes([permissions.IsAuthenticated])
 def bot_settings(request):
-    """Update bot configuration: toggle, persona name, greeting message."""
+    """Update bot configuration: toggle, persona name, greeting, owner phone, proactive alerts."""
     tenant = _get_tenant_from_request(request)
     if not tenant:
         return Response({'error': 'No tenant context'}, status=400)
@@ -146,6 +149,12 @@ def bot_settings(request):
         account.bot_display_name = data['bot_display_name'][:100]
     if 'greeting_message' in data:
         account.greeting_message = data['greeting_message']
+    if 'owner_phone_number' in data:
+        account.owner_phone_number = str(data['owner_phone_number']).strip()
+    if 'enable_delayed_order_alerts' in data:
+        account.enable_delayed_order_alerts = bool(data['enable_delayed_order_alerts'])
+    if 'enable_daily_reports' in data:
+        account.enable_daily_reports = bool(data['enable_daily_reports'])
 
     account.save()
     return Response({
@@ -153,6 +162,9 @@ def bot_settings(request):
         'is_active': account.is_active,
         'bot_display_name': account.bot_display_name,
         'greeting_message': account.greeting_message,
+        'owner_phone_number': account.owner_phone_number,
+        'enable_delayed_order_alerts': account.enable_delayed_order_alerts,
+        'enable_daily_reports': account.enable_daily_reports,
     })
 
 

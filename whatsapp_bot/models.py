@@ -29,6 +29,22 @@ class TenantWhatsAppAccount(models.Model):
         help_text='Custom greeting sent on first contact',
     )
 
+    # Owner Copilot & Proactive Alerts
+    owner_phone_number = models.CharField(
+        max_length=30,
+        blank=True,
+        default='',
+        help_text="Owner's personal WhatsApp phone number for bot copilot commands and alerts",
+    )
+    enable_delayed_order_alerts = models.BooleanField(
+        default=True,
+        help_text='Proactively alert owner on WhatsApp if an order is in pending/preparing for > 30 minutes',
+    )
+    enable_daily_reports = models.BooleanField(
+        default=True,
+        help_text='Send daily evening closing revenue reports to owner on WhatsApp',
+    )
+
     # Metadata
     connected_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)

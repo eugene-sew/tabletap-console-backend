@@ -259,3 +259,18 @@ HOSTINGER_BASE_DOMAIN = config('HOSTINGER_BASE_DOMAIN', default='tabletap.space'
 HOSTINGER_CNAME_TARGET = config('HOSTINGER_CNAME_TARGET', default='8534e62137f12ea9.vercel-dns-017.com.')
 HOSTINGER_API_BASE = config('HOSTINGER_API_BASE', default='https://developers.hostinger.com')
 META_DEFAULT_TENANT_SLUG = config('META_DEFAULT_TENANT_SLUG', default='')
+
+# ── Celery Beat Scheduled Tasks ───────────────────────────────────────────────
+from celery.schedules import crontab
+
+CELERY_BEAT_SCHEDULE = {
+    'check-delayed-orders-every-5-mins': {
+        'task': 'whatsapp_bot.tasks.check_delayed_orders_task',
+        'schedule': 300.0,  # 5 minutes
+    },
+    'send-daily-closing-reports-evening': {
+        'task': 'whatsapp_bot.tasks.send_daily_closing_report_task',
+        'schedule': crontab(hour=22, minute=0),  # 10:00 PM
+    },
+}
+

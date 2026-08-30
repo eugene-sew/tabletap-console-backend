@@ -239,35 +239,220 @@ def get_live_orders(tenant_slug: str) -> dict:
         }
 
 
-def get_metrics_summary(tenant_slug: str) -> dict:
-    """Owner: today's order count, revenue, and top item."""
+def get_metrics_summary(tenant_slug: str, period: str = 'today') -> dict:
+    """Owner: order count, revenue, breakdown, AOV, and top items."""
     with _with_tenant(tenant_slug):
         from orders.models import Order, OrderItem
         from django.utils import timezone
-        from django.db.models import Sum, Count
-        today = timezone.now().date()
-        today_orders = Order.objects.filter(created_at__date=today)
-        revenue = today_orders.filter(
-            payment_status='paid'
-        ).aggregate(total=Sum('total_amount'))['total'] or 0
-        order_count = today_orders.count()
-        completed = today_orders.filter(status='completed').count()
-        pending = today_orders.filter(status='pending').count()
+        from django.db.models import Sum, Count, Avg
+        from datetime import timedelta
+
+        now = timezone.now()
+        if period == 'week':
+            start_date = (now - timedelta(days=7)).date()
+            label = "Last 7 Days"
+        elif period == 'month':
+            start_date = (now - timedelta(days=30)).date()
+            label = "Last 30 Days"
+        else:
+            start_date = now.date()
+            label = "Today"
+
+        period_orders = Order.objects.filter(created_at__date__gte=start_date)
+        paid_orders = period_orders.filter(payment_status='paid')
+
+        revenue = paid_orders.aggregate(total=Sum('total_amount'))['total'] or 0
+        aov = paid_orders.aggregate(avg=Avg('total_amount'))['avg'] or 0
+        order_count = period_orders.count()
+        completed = period_orders.filter(status='completed').count()
+        pending = period_orders.filter(status='pending').count()
+        preparing = period_orders.filter(status='preparing').count()
+        cancelled = period_orders.filter(status='cancelled').count()
+
+        # Payment methods breakdown
+        momo_rev = paid_orders.filter(payment_method__icontains='momo').aggregate(t=Sum('total_amount'))['t'] or 0
+        cash_rev = paid_orders.filter(payment_method__icontains='cash').aggregate(t=Sum('total_amount'))['t'] or 0
+        card_rev = paid_orders.filter(payment_method__icontains='card').aggregate(t=Sum('total_amount'))['t'] or 0
+
         # Top item
         top = (
-            OrderItem.objects.filter(order__created_at__date=today)
+            OrderItem.objects.filter(order__created_at__date__gte=start_date)
             .values('name')
-            .annotate(cnt=Count('id'))
-            .order_by('-cnt')
+            .annotate(cnt=Count('id'), qty=Sum('quantity'))
+            .order_by('-qty')
             .first()
         )
         return {
-            'date': str(today),
+            'period': label,
             'order_count': order_count,
             'completed': completed,
             'pending': pending,
+            'preparing': preparing,
+            'cancelled': cancelled,
             'revenue': float(revenue),
-            'top_item': top['name'] if top else 'N/A',
+            'average_order_value': round(float(aov), 2),
+            'payments': {
+                'momo': float(momo_rev),
+                'cash': float(cash_rev),
+                'card': float(card_rev),
+            },
+            'top_item': f"{top['name']} ({top['qty']} sold)" if top else 'N/A',
+        }
+
+
+def add_menu_item_tool(
+    tenant_slug: str,
+    name: str,
+    price: float,
+    category_name: str = "General",
+    description: str = "",
+    is_available: bool = True,
+) -> dict:
+    """Owner: Add a new menu item, auto-creating the category if it doesn't exist."""
+    with _with_tenant(tenant_slug):
+        from menu.models import Category, MenuItem
+        from tenants.models import Tenant
+
+        tenant = Tenant.objects.get(slug=tenant_slug)
+        cat_name = (category_name or "General").strip().title()
+
+        # Find or auto-create category
+        category = Category.objects.filter(name__iexact=cat_name).first()
+        if not category:
+            max_priority = Category.objects.all().order_by('-priority').values_list('priority', flat=True).first() or 0
+            category = Category.objects.create(
+                tenant=tenant,
+                name=cat_name,
+                priority=max_priority + 1,
+            )
+            cat_created = True
+        else:
+            cat_created = False
+
+        # Create menu item
+        item = MenuItem.objects.create(
+            tenant=tenant,
+            category=category,
+            name=name.strip(),
+            price=price,
+            description=description.strip(),
+            isAvailable=is_available,
+        )
+
+        # Trigger Pusher sync
+        try:
+            from orders.pusher_client import get_pusher_client
+            client = get_pusher_client()
+            if client:
+                client.trigger(f'menu-{tenant_slug}', 'menu-updated', {'action': 'item-created', 'item_id': item.id})
+        except Exception:
+            pass
+
+        return {
+            'success': True,
+            'item_id': item.id,
+            'name': item.name,
+            'price': float(item.price),
+            'category': category.name,
+            'category_auto_created': cat_created,
+            'is_available': item.isAvailable,
+        }
+
+
+def update_menu_item_tool(
+    tenant_slug: str,
+    item_name: str,
+    new_price: float = None,
+    new_name: str = None,
+    description: str = None,
+    category_name: str = None,
+    available: bool = None,
+) -> dict:
+    """Owner: update price, name, description, category, or availability of a menu item."""
+    with _with_tenant(tenant_slug):
+        from menu.models import MenuItem, Category
+        from tenants.models import Tenant
+
+        item = MenuItem.objects.filter(name__icontains=item_name.strip()).first()
+        if not item:
+            return {'success': False, 'error': f'No menu item matching "{item_name}" found.'}
+
+        updated_fields = []
+        if new_price is not None:
+            item.price = new_price
+            updated_fields.append(f'price = GHS {new_price:.2f}')
+
+        if new_name:
+            item.name = new_name.strip()
+            updated_fields.append(f'name = "{item.name}"')
+
+        if description is not None:
+            item.description = description.strip()
+            updated_fields.append('description updated')
+
+        if available is not None:
+            item.isAvailable = available
+            updated_fields.append('available' if available else 'paused (86ed)')
+
+        if category_name:
+            tenant = Tenant.objects.get(slug=tenant_slug)
+            cat_name = category_name.strip().title()
+            category = Category.objects.filter(name__iexact=cat_name).first()
+            if not category:
+                max_priority = Category.objects.all().order_by('-priority').values_list('priority', flat=True).first() or 0
+                category = Category.objects.create(
+                    tenant=tenant,
+                    name=cat_name,
+                    priority=max_priority + 1,
+                )
+            item.category = category
+            updated_fields.append(f'category = "{category.name}"')
+
+        item.save()
+
+        # Trigger Pusher sync
+        try:
+            from orders.pusher_client import get_pusher_client
+            client = get_pusher_client()
+            if client:
+                client.trigger(f'menu-{tenant_slug}', 'menu-updated', {'action': 'item-updated', 'item_id': item.id})
+        except Exception:
+            pass
+
+        return {
+            'success': True,
+            'name': item.name,
+            'price': float(item.price),
+            'category': item.category.name,
+            'is_available': item.isAvailable,
+            'changes': updated_fields,
+        }
+
+
+def delete_menu_item_tool(tenant_slug: str, item_name: str) -> dict:
+    """Owner: delete a menu item by name."""
+    with _with_tenant(tenant_slug):
+        from menu.models import MenuItem
+
+        item = MenuItem.objects.filter(name__icontains=item_name.strip()).first()
+        if not item:
+            return {'success': False, 'error': f'No menu item matching "{item_name}" found.'}
+
+        deleted_name = item.name
+        item.delete()
+
+        # Trigger Pusher sync
+        try:
+            from orders.pusher_client import get_pusher_client
+            client = get_pusher_client()
+            if client:
+                client.trigger(f'menu-{tenant_slug}', 'menu-updated', {'action': 'item-deleted'})
+        except Exception:
+            pass
+
+        return {
+            'success': True,
+            'deleted_item': deleted_name,
         }
 
 
@@ -309,8 +494,19 @@ def toggle_item_availability_tool(tenant_slug: str, item_name: str, available: b
             item.isAvailable = available
             item.save(update_fields=['isAvailable'])
             updated.append(item.name)
+
+        # Trigger Pusher sync
+        try:
+            from orders.pusher_client import get_pusher_client
+            client = get_pusher_client()
+            if client:
+                client.trigger(f'menu-{tenant_slug}', 'menu-updated', {'action': 'availability-toggled'})
+        except Exception:
+            pass
+
         return {
             'success': True,
             'updated_items': updated,
-            'availability': 'available' if available else 'paused',
+            'availability': 'available' if available else 'paused (86ed)',
         }
+

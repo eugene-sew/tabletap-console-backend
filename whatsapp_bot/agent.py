@@ -143,17 +143,26 @@ CUSTOMER_TOOL_DECLARATIONS = [
 OWNER_TOOL_DECLARATIONS = [
     {
         'name': 'get_metrics_summary',
-        'description': "Get today's order count, revenue, pending orders, and top selling item.",
-        'parameters': {'type': 'OBJECT', 'properties': {}},
+        'description': "Get sales metrics, revenue, order counts, payment method breakdown, AOV, and top-selling items.",
+        'parameters': {
+            'type': 'OBJECT',
+            'properties': {
+                'period': {
+                    'type': 'STRING',
+                    'enum': ['today', 'week', 'month'],
+                    'description': "Time window for metrics. Defaults to 'today'.",
+                },
+            },
+        },
     },
     {
         'name': 'get_live_orders',
-        'description': 'Get all active (pending/preparing/ready) orders right now.',
+        'description': 'Get all active (pending/preparing/ready) orders right now with wait times.',
         'parameters': {'type': 'OBJECT', 'properties': {}},
     },
     {
         'name': 'update_order_status',
-        'description': 'Change the status of an order.',
+        'description': 'Change the status of an order (e.g. mark as ready, completed, cancelled).',
         'parameters': {
             'type': 'OBJECT',
             'required': ['order_number', 'new_status'],
@@ -167,8 +176,55 @@ OWNER_TOOL_DECLARATIONS = [
         },
     },
     {
+        'name': 'get_menu',
+        'description': 'View the full current restaurant menu with categories, items, prices, and availability.',
+        'parameters': {'type': 'OBJECT', 'properties': {}},
+    },
+    {
+        'name': 'add_menu_item',
+        'description': 'Add a new item to the restaurant menu. If the category does not exist, it is automatically created.',
+        'parameters': {
+            'type': 'OBJECT',
+            'required': ['name', 'price', 'category_name'],
+            'properties': {
+                'name': {'type': 'STRING', 'description': 'Name of the new menu item'},
+                'price': {'type': 'NUMBER', 'description': 'Price in local currency (e.g. 65.00)'},
+                'category_name': {'type': 'STRING', 'description': 'Category to place item under (e.g. Mains, Drinks, Grills). Created automatically if new.'},
+                'description': {'type': 'STRING', 'description': 'Optional description of the dish'},
+                'is_available': {'type': 'BOOLEAN', 'description': 'True if available now, False if 86ed'},
+            },
+        },
+    },
+    {
+        'name': 'update_menu_item',
+        'description': 'Update price, name, description, category, or availability of an existing menu item.',
+        'parameters': {
+            'type': 'OBJECT',
+            'required': ['item_name'],
+            'properties': {
+                'item_name': {'type': 'STRING', 'description': 'Name of the item to find and update'},
+                'new_price': {'type': 'NUMBER', 'description': 'New price in local currency'},
+                'new_name': {'type': 'STRING', 'description': 'New name for the item if renaming'},
+                'description': {'type': 'STRING', 'description': 'New description for the dish'},
+                'category_name': {'type': 'STRING', 'description': 'New category for the item (created automatically if new)'},
+                'available': {'type': 'BOOLEAN', 'description': 'True = available, False = paused (86ed)'},
+            },
+        },
+    },
+    {
+        'name': 'delete_menu_item',
+        'description': 'Permanently delete a menu item from the restaurant menu.',
+        'parameters': {
+            'type': 'OBJECT',
+            'required': ['item_name'],
+            'properties': {
+                'item_name': {'type': 'STRING', 'description': 'Name of the item to delete'},
+            },
+        },
+    },
+    {
         'name': 'toggle_item_availability',
-        'description': 'Pause or resume a menu item. Use when owner says "pause the jollof" or "bring back the chicken".',
+        'description': 'Pause or resume a menu item. Use when owner says "pause the jollof", "86 the chicken", or "bring back tilapia".',
         'parameters': {
             'type': 'OBJECT',
             'required': ['item_name', 'available'],
@@ -210,18 +266,30 @@ RULES — follow these strictly:
 
 
 def _owner_system_prompt(tenant) -> str:
-    return f"""You are the management assistant for *{tenant.name}* on WhatsApp.
-You help the restaurant owner/manager monitor operations and manage orders.
+    currency = tenant.currency or 'GHS'
+    return f"""You are the intelligent WhatsApp Copilot & Business Assistant for the owner/manager of *{tenant.name}*.
 
 Restaurant: {tenant.name}
+Currency: {currency}
 Current time: {timezone.now().strftime('%H:%M, %A %d %B %Y')}
 
+YOU HAVE FULL ADMINISTRATIVE POWERS OVER THIS RESTAURANT:
+1. **Financial & Sales Analytics**:
+   - Give concise, executive summaries on revenue, order volumes, average order value (AOV), and payment breakdowns (Cash vs MoMo vs Card).
+   - Use `get_metrics_summary` with `period='today'`, `'week'`, or `'month'`.
+2. **Menu Management**:
+   - You can add new dishes with `add_menu_item`. If the owner specifies a category that doesn't exist yet, it is automatically created!
+   - You can update prices, descriptions, names, or categories with `update_menu_item`.
+   - You can pause (86) or restore items with `toggle_item_availability`.
+   - You can inspect the menu with `get_menu`.
+3. **Live Kitchen Operations**:
+   - View active orders and wait times with `get_live_orders`.
+   - Update order status (mark ready, completed, cancelled) with `update_order_status`.
+
 RULES:
-1. Be professional and concise. Give numbers and facts directly.
-2. Always use tools to fetch real data — never make up figures.
-3. When showing orders, use a numbered list format.
-4. For status updates, confirm back what you changed.
-5. If asked about something outside orders/metrics/menu management, politely say you can only help with restaurant operations."""
+- Be fast, professional, and clear. Format numbers with emojis (💰, 📦, 🍳, ⏳).
+- Confirm every menu addition or price change with the exact details updated.
+- When an owner asks "How are we doing?", give today's revenue, order count, top item, and any pending orders."""
 
 
 # ---------------------------------------------------------------------------
@@ -274,13 +342,36 @@ def _dispatch_customer_tool(name: str, args: dict, tenant_slug: str, session: di
 
 def _dispatch_owner_tool(name: str, args: dict, tenant_slug: str) -> str:
     if name == 'get_metrics_summary':
-        result = T.get_metrics_summary(tenant_slug)
+        result = T.get_metrics_summary(tenant_slug, args.get('period', 'today'))
     elif name == 'get_live_orders':
         result = T.get_live_orders(tenant_slug)
     elif name == 'update_order_status':
         result = T.update_order_status_tool(
             tenant_slug, args.get('order_number', ''), args.get('new_status', '')
         )
+    elif name == 'get_menu':
+        result = T.get_menu(tenant_slug)
+    elif name == 'add_menu_item':
+        result = T.add_menu_item_tool(
+            tenant_slug=tenant_slug,
+            name=args.get('name', ''),
+            price=float(args.get('price', 0)),
+            category_name=args.get('category_name', 'General'),
+            description=args.get('description', ''),
+            is_available=args.get('is_available', True),
+        )
+    elif name == 'update_menu_item':
+        result = T.update_menu_item_tool(
+            tenant_slug=tenant_slug,
+            item_name=args.get('item_name', ''),
+            new_price=float(args.get('new_price')) if args.get('new_price') is not None else None,
+            new_name=args.get('new_name'),
+            description=args.get('description'),
+            category_name=args.get('category_name'),
+            available=args.get('available'),
+        )
+    elif name == 'delete_menu_item':
+        result = T.delete_menu_item_tool(tenant_slug, args.get('item_name', ''))
     elif name == 'toggle_item_availability':
         result = T.toggle_item_availability_tool(
             tenant_slug, args.get('item_name', ''), args.get('available', True)
